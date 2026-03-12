@@ -48,6 +48,63 @@ The benchmark uses a fixed seed and reports the best, median, and mean wall-cloc
 
 For the Zorro benchmarks, the driver uses local engine instances rather than the thread-local helper API so the measurements focus on generator and distribution throughput.
 
+## Findings
+
+### Normal generation
+
+vecpolar (x8 AVX2 dual-stream + blended `_ZGVdN4v_log`) is the fastest N(0,1)
+path at ~292 M/s (Zorro) and ~303 M/s (stephanfr). The earlier extract and
+batched variants top out around 162 M/s. The veclog batch variant sits in
+between at ~263 M/s. The vectorized transform — not the wider PRNG — is the
+dominant factor.
+
+### Fused vs decoupled generation
+
+The thesis "tight integration of raw bit generation with the follow-up
+distribution algorithm is an advantage" holds, but conditionally:
+
+**Gamma(2, 1) — fused wins decisively**
+
+| Kernel | M/s |
+|---|---|
+| scalar fused | 47 |
+| x8 AVX2 fused | 117 |
+| x8+x4 AVX2 full (vectorized MT) | 116 |
+| x8 AVX2 decoupled | 45 |
+
+Fused keeps the PRNG state registers hot and feeds the Marsaglia-Tsang
+acceptance loop directly from a 64-sample L1-resident buffer. Decoupled
+materialises ~320 MB of intermediate normals and uniforms to the heap, paying
+full memory bandwidth for no gain. A fully vectorised MT acceptance loop
+(4-wide AVX2 uniforms + unconditional `veclog` pair) does not improve on fused:
+the fast-accept path fires ~80 % of the time, the scalar loop was never the
+bottleneck, and the unconditional `veclog` overhead on the slow path absorbs
+any benefit from eliminating serial dependency chains.
+
+**Student's t(5) — decoupled wins**
+
+| Kernel | M/s |
+|---|---|
+| scalar fused | 27 |
+| x8 AVX2 fused | 35 |
+| x8 AVX2 decoupled (vecpolar Z + gamma_fused V) | 39 |
+| x8+x4 AVX2 fast (vecpolar Z + gamma_full V) | 39 |
+
+For a compound distribution the fused variant forces a scalar Gamma loop into
+the hot path immediately after the AVX2 normal generation. Decoupled lets each
+sub-distribution run its own best kernel independently; the memory-traffic cost
+(two heap-write + two heap-read passes) is more than recovered. The choice of
+Gamma kernel (fused vs full) makes no difference at this level — both hit the
+same throughput ceiling set by the two-pass memory traffic.
+
+**Summary**
+
+- Fused integration is the right default when the distribution is
+  self-contained and fits in L1 (Gamma: 2.5× over decoupled).
+- Decoupled is better for compound distributions where one sub-computation
+  would otherwise serialize an otherwise-vectorised pipeline (Student-t: 1.1×
+  over fused, with headroom limited by memory bandwidth rather than compute).
+
 ## Third-party code
 
 The handwritten SIMD comparison uses a vendored snapshot of Stephan Friedl's `Xoshiro256PlusSIMD` headers under `third_party/stephanfr_xoshiro256plussimd`, taken from upstream commit `29b30821f8f59b6106462c03d1d0225c93c4545d`. The upstream license is preserved in `third_party/stephanfr_xoshiro256plussimd/LICENSE`.
