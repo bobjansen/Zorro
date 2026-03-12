@@ -52,6 +52,8 @@ void fill_gamma_x8_avx2_fused(std::uint64_t seed, double alpha, double* out,
                                std::size_t count) noexcept;
 void fill_gamma_x8_avx2_decoupled(std::uint64_t seed, double alpha, double* out,
                                    std::size_t count) noexcept;
+void fill_gamma_x8_avx2_full(std::uint64_t seed, double alpha, double* out,
+                              std::size_t count) noexcept;
 
 // Student's t(nu) — t = N(0,1) / sqrt(2·Gamma(nu/2)/nu)
 void fill_student_t_scalar_fused(std::uint64_t seed, double nu, double* out,
@@ -60,5 +62,7 @@ void fill_student_t_x8_avx2_fused(std::uint64_t seed, double nu, double* out,
                                    std::size_t count) noexcept;
 void fill_student_t_x8_avx2_decoupled(std::uint64_t seed, double nu, double* out,
                                        std::size_t count) noexcept;
+void fill_student_t_x8_avx2_fast(std::uint64_t seed, double nu, double* out,
+                                  std::size_t count) noexcept;
 
 }  // namespace zorro_bench

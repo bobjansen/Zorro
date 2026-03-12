@@ -269,6 +269,9 @@ void fill_gamma_avx2_fused(double* out, std::size_t count) {
 void fill_gamma_avx2_decoupled(double* out, std::size_t count) {
     zorro_bench::fill_gamma_x8_avx2_decoupled(kSeed, 2.0, out, count);
 }
+void fill_gamma_avx2_full(double* out, std::size_t count) {
+    zorro_bench::fill_gamma_x8_avx2_full(kSeed, 2.0, out, count);
+}
 #endif
 
 // ── Student's t(5) ───────────────────────────────────────────────────────────
@@ -281,6 +284,9 @@ void fill_student_t_avx2_fused(double* out, std::size_t count) {
 }
 void fill_student_t_avx2_decoupled(double* out, std::size_t count) {
     zorro_bench::fill_student_t_x8_avx2_decoupled(kSeed, 5.0, out, count);
+}
+void fill_student_t_avx2_fast(double* out, std::size_t count) {
+    zorro_bench::fill_student_t_x8_avx2_fast(kSeed, 5.0, out, count);
 }
 #endif
 
@@ -424,19 +430,21 @@ int main() {
 #endif
 
     std::vector<BenchmarkResult> gamma_results;
-    gamma_results.reserve(4);
+    gamma_results.reserve(5);
     gamma_results.push_back(run_benchmark("scalar fused",          fill_gamma_scalar));
 #ifdef __AVX2__
     gamma_results.push_back(run_benchmark("x8 AVX2 fused",         fill_gamma_avx2_fused));
     gamma_results.push_back(run_benchmark("x8 AVX2 decoupled",     fill_gamma_avx2_decoupled));
+    gamma_results.push_back(run_benchmark("x8+x4 AVX2 full",       fill_gamma_avx2_full));
 #endif
 
     std::vector<BenchmarkResult> student_t_results;
-    student_t_results.reserve(4);
+    student_t_results.reserve(5);
     student_t_results.push_back(run_benchmark("scalar fused",      fill_student_t_scalar));
 #ifdef __AVX2__
     student_t_results.push_back(run_benchmark("x8 AVX2 fused",     fill_student_t_avx2_fused));
     student_t_results.push_back(run_benchmark("x8 AVX2 decoupled", fill_student_t_avx2_decoupled));
+    student_t_results.push_back(run_benchmark("x8+x4 AVX2 fast",   fill_student_t_avx2_fast));
 #endif
 
     print_results("Uniform(0, 1)", uniform_results);

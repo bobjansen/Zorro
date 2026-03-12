@@ -1385,6 +1385,169 @@ void fill_gamma_x8_avx2_decoupled(std::uint64_t seed, double alpha, double* out,
     }
 }
 
+// ── x8+x4 AVX2 full: vectorized MT phase via a 4-wide AVX2 uniform stream ────
+// Phase 1: x8 vecpolar → buf_x (N(0,1) normals), same as fused above.
+// Phase 2: 4-wide AVX2 stream C draws uniforms; compute v^3, fast test, and
+//          both log(u)+log(v) via veclog unconditionally — avoids scalar loop.
+// Calling veclog for all 4 lanes regardless of fast-accept wastes ~25 % log
+// work but eliminates serial dependency chains and scalar loop overhead.
+void fill_gamma_x8_avx2_full(std::uint64_t seed, double alpha, double* out,
+                              std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    // 9th–12th streams (one x4 AVX2 state) for MT acceptance uniforms.
+    alignas(32) std::uint64_t sc0[4], sc1[4], sc2[4], sc3[4];
+    {
+        std::uint64_t all0[12], all1[12], all2[12], all3[12];
+        seed_lanes(seed, 12, all0, all1, all2, all3);
+        for (int lane = 0; lane < 4; ++lane) {
+            sc0[lane] = all0[lane + 8]; sc1[lane] = all1[lane + 8];
+            sc2[lane] = all2[lane + 8]; sc3[lane] = all3[lane + 8];
+        }
+    }
+    __m256i c0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sc0));
+    __m256i c1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sc1));
+    __m256i c2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sc2));
+    __m256i c3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sc3));
+
+    const double d = alpha - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+
+    const __m256d one      = _mm256_set1_pd(1.0);
+    const __m256d zero     = _mm256_setzero_pd();
+    const __m256d neg2     = _mm256_set1_pd(-2.0);
+    const __m256d half     = _mm256_set1_pd(0.5);
+    const __m256d safe     = _mm256_set1_pd(0.5);
+    const __m256d d_vec    = _mm256_set1_pd(d);
+    const __m256d c_vec    = _mm256_set1_pd(c);
+    const __m256d mt_coeff = _mm256_set1_pd(0.0331);
+
+    static constexpr int kBuf = 64;
+    alignas(32) double buf_x[kBuf];
+
+    std::size_t i = 0;
+    while (i < count) {
+        // ── Phase 1: fill buf_x with kBuf N(0,1) via x8 vecpolar ─────────────
+        int n = 0;
+        while (n < kBuf) {
+            const __m256d u1a = u64_to_pm1_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+            const __m256d u2a = u64_to_pm1_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+            const __m256d sq_a = _mm256_add_pd(_mm256_mul_pd(u1a, u1a),
+                                               _mm256_mul_pd(u2a, u2a));
+            const __m256d acc_a = _mm256_and_pd(_mm256_cmp_pd(sq_a, one, _CMP_LT_OQ),
+                                                _mm256_cmp_pd(sq_a, zero, _CMP_GT_OQ));
+            const int bits_a = _mm256_movemask_pd(acc_a);
+            if (bits_a) {
+                const __m256d sf_a = _mm256_blendv_pd(safe, sq_a, acc_a);
+                const __m256d fa   = _mm256_sqrt_pd(
+                    _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf_a)), sf_a));
+                alignas(32) double xa[4], xa2[4];
+                _mm256_store_pd(xa,  _mm256_mul_pd(u1a, fa));
+                _mm256_store_pd(xa2, _mm256_mul_pd(u2a, fa));
+                for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+                    if (bits_a & (1 << lane)) {
+                        buf_x[n++] = xa[lane];
+                        if (n < kBuf) buf_x[n++] = xa2[lane];
+                    }
+                }
+            }
+            const __m256d u1b = u64_to_pm1_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+            const __m256d u2b = u64_to_pm1_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+            const __m256d sq_b = _mm256_add_pd(_mm256_mul_pd(u1b, u1b),
+                                               _mm256_mul_pd(u2b, u2b));
+            const __m256d acc_b = _mm256_and_pd(_mm256_cmp_pd(sq_b, one, _CMP_LT_OQ),
+                                                _mm256_cmp_pd(sq_b, zero, _CMP_GT_OQ));
+            const int bits_b = _mm256_movemask_pd(acc_b);
+            if (bits_b) {
+                const __m256d sf_b = _mm256_blendv_pd(safe, sq_b, acc_b);
+                const __m256d fb   = _mm256_sqrt_pd(
+                    _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf_b)), sf_b));
+                alignas(32) double xb[4], xb2[4];
+                _mm256_store_pd(xb,  _mm256_mul_pd(u1b, fb));
+                _mm256_store_pd(xb2, _mm256_mul_pd(u2b, fb));
+                for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+                    if (bits_b & (1 << lane)) {
+                        buf_x[n++] = xb[lane];
+                        if (n < kBuf) buf_x[n++] = xb2[lane];
+                    }
+                }
+            }
+        }
+
+        // ── Phase 2: vectorized MT — 4-wide AVX2 uniform stream C ─────────────
+        int k = 0;
+        for (; k + 4 <= n && i < count; k += 4) {
+            const __m256d x  = _mm256_load_pd(buf_x + k);
+            const __m256d u  = u64_to_uniform01_52_avx2(next_x4_avx2(c0, c1, c2, c3));
+
+            // v = (1 + c*x)^3; blend safe value (1.0) for lanes with vr ≤ 0
+            const __m256d vr      = _mm256_add_pd(one, _mm256_mul_pd(c_vec, x));
+            const __m256d vr_pos  = _mm256_cmp_pd(vr, zero, _CMP_GT_OQ);
+            const __m256d safe_vr = _mm256_blendv_pd(one, vr, vr_pos);
+            const __m256d v       = _mm256_mul_pd(safe_vr, _mm256_mul_pd(safe_vr, safe_vr));
+
+            // Fast test (no log): u < 1 − 0.0331·x⁴
+            const __m256d x2          = _mm256_mul_pd(x, x);
+            const __m256d x4          = _mm256_mul_pd(x2, x2);
+            const __m256d fast_thresh = _mm256_sub_pd(one, _mm256_mul_pd(mt_coeff, x4));
+            const __m256d fast_acc    = _mm256_cmp_pd(u, fast_thresh, _CMP_LT_OQ);
+
+            // Slow test: log(u) < x²/2 + d·(1 − v + log v)
+            // Call veclog unconditionally; rejected lanes' results are masked out.
+            const __m256d log_u   = _ZGVdN4v_log(u);          // u ∈ (0,1): always valid
+            const __m256d log_v   = _ZGVdN4v_log(v);          // safe_vr ≥ 1: always valid
+            const __m256d slow_rhs = _mm256_add_pd(
+                _mm256_mul_pd(half, x2),
+                _mm256_mul_pd(d_vec, _mm256_add_pd(_mm256_sub_pd(one, v), log_v)));
+            const __m256d slow_acc = _mm256_cmp_pd(log_u, slow_rhs, _CMP_LT_OQ);
+
+            // Accept = (fast OR slow) AND vr > 0
+            const __m256d accept     = _mm256_and_pd(vr_pos, _mm256_or_pd(fast_acc, slow_acc));
+            const int     accept_bits = _mm256_movemask_pd(accept);
+
+            if (accept_bits) {
+                alignas(32) double gv[4];
+                _mm256_store_pd(gv, _mm256_mul_pd(d_vec, v));
+                for (int lane = 0; lane < 4 && i < count; ++lane) {
+                    if (accept_bits & (1 << lane))
+                        out[i++] = gv[lane];
+                }
+            }
+        }
+        // Scalar tail for any remaining < 4 entries in buf_x this batch
+        for (; k < n && i < count; ++k) {
+            const double x  = buf_x[k];
+            const double vr = 1.0 + c * x;
+            if (vr <= 0.0) continue;
+            const double v  = vr * vr * vr;
+            // Reuse stream c0..c3 for the scalar tail via next_pp on sc
+            alignas(32) std::uint64_t sc_snap[4];
+            _mm256_store_si256(reinterpret_cast<__m256i*>(sc_snap), c0);
+            const double u  = static_cast<double>(
+                (rotl64(sc_snap[0] + sc_snap[3], 23) + sc_snap[0]) >> 11) * 0x1.0p-53;
+            c0 = next_x4_avx2(c0, c1, c2, c3);  // advance one step
+            const double x2 = x * x;
+            if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+            if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+        }
+    }
+#else
+    fill_gamma_scalar_fused(seed, alpha, out, count);
+#endif
+}
+
 // ─── Student's t(nu) — t = N(0,1) / sqrt(2·Gamma(nu/2, 1)/nu) ───────────────
 //
 // Benchmarked at nu = 5  →  Gamma shape = 2.5, d = 13/6, acceptance ≈ 98 %.
@@ -1570,6 +1733,20 @@ void fill_student_t_x8_avx2_decoupled(std::uint64_t seed, double nu, double* out
     std::vector<double> z_buf(count), g_buf(count);
     fill_xoshiro256pp_x8_normal_vecpolar_avx2(seed, z_buf.data(), count);
     fill_gamma_x8_avx2_fused(seed ^ 0x9e3779b97f4a7c15ULL, nu / 2.0, g_buf.data(), count);
+    for (std::size_t i = 0; i < count; ++i)
+        out[i] = z_buf[i] / std::sqrt(2.0 * g_buf[i] / nu);
+}
+
+// ── x8 AVX2 fast ─────────────────────────────────────────────────────────────
+// Uses the best available kernels for each sub-distribution independently:
+// vecpolar for Z ~ N(0,1); fill_gamma_x8_avx2_full (vectorized MT phase) for
+// V ~ Gamma(nu/2). The Gamma "full" kernel replaces the scalar MT loop with a
+// 4-wide AVX2 uniform stream, eliminating the scalar bottleneck.
+void fill_student_t_x8_avx2_fast(std::uint64_t seed, double nu, double* out,
+                                  std::size_t count) noexcept {
+    std::vector<double> z_buf(count), g_buf(count);
+    fill_xoshiro256pp_x8_normal_vecpolar_avx2(seed, z_buf.data(), count);
+    fill_gamma_x8_avx2_full(seed ^ 0x9e3779b97f4a7c15ULL, nu / 2.0, g_buf.data(), count);
     for (std::size_t i = 0; i < count; ++i)
         out[i] = z_buf[i] / std::sqrt(2.0 * g_buf[i] / nu);
 }
