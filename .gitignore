@@ -1,0 +1,5 @@
+.cache
+build*/**
+third_party/**
+aws/results/**
+aws/.*.pem
