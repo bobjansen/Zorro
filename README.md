@@ -8,7 +8,7 @@ The core public API lives in `include/zorro/zorro.hpp` under the `zorro`
 namespace. The root-level `zorro.hpp` and `rng.hpp` headers are compatibility
 shims during the cleanup.
 
-The benchmark target compares `2^20` samples for both `uniform(0, 1)` and standard-normal (`N(0, 1)`) generation across:
+The benchmark target compares `2^24` samples for both `uniform(0, 1)` and standard-normal (`N(0, 1)`) generation across:
 
 - `std::mt19937`
 - scalar `xoshiro256++`
