@@ -35,22 +35,4 @@ void fill_xoshiro256pp_x8_normal_polar_avx2_veclog(std::uint64_t seed, double* o
 void fill_xoshiro256pp_x8_normal_vecpolar_avx2(std::uint64_t seed, double* out,
                                                  std::size_t count) noexcept;
 
-// ── Exponential distribution ────────────────────────────────────────────────
-// Naive: generate uniform doubles, then -log(u) scalar.
-void fill_xoshiro256pp_x8_exponential_naive(std::uint64_t seed, double* out,
-                                             std::size_t count) noexcept;
-// Fast: generate raw bits, convert to uniform in SIMD, vectorized -log via libmvec.
-void fill_xoshiro256pp_x8_exponential_avx2(std::uint64_t seed, double* out,
-                                            std::size_t count) noexcept;
-
-// ── Bernoulli distribution ──────────────────────────────────────────────────
-// Naive: generate uniform doubles, compare against p.
-void fill_xoshiro256pp_x8_bernoulli_naive(std::uint64_t seed, double p,
-                                           double* out,
-                                           std::size_t count) noexcept;
-// Fast: compare raw uint64 against precomputed threshold, no float conversion.
-void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
-                                          double* out,
-                                          std::size_t count) noexcept;
-
 }  // namespace zorro_bench

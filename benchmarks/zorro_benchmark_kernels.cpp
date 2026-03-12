@@ -981,4 +981,217 @@ void fill_xoshiro256pp_x4_uniform01_fused(std::uint64_t seed, double* out,
     }
 }
 
+// ─── Exponential: naive (generate uniforms, then scalar -log) ────────────────
+void fill_xoshiro256pp_x8_exponential_naive(std::uint64_t seed, double* out,
+                                             std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    alignas(32) double tmp[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    std::size_t i = 0;
+    while (i + 8 <= count) {
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        out[i + 0] = -std::log(tmp[0]);
+        out[i + 1] = -std::log(tmp[1]);
+        out[i + 2] = -std::log(tmp[2]);
+        out[i + 3] = -std::log(tmp[3]);
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3)));
+        out[i + 4] = -std::log(tmp[0]);
+        out[i + 5] = -std::log(tmp[1]);
+        out[i + 6] = -std::log(tmp[2]);
+        out[i + 7] = -std::log(tmp[3]);
+        i += 8;
+    }
+    while (i + 4 <= count) {
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        out[i + 0] = -std::log(tmp[0]);
+        out[i + 1] = -std::log(tmp[1]);
+        out[i + 2] = -std::log(tmp[2]);
+        out[i + 3] = -std::log(tmp[3]);
+        i += 4;
+    }
+    if (i < count) {
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = -std::log(tmp[lane]);
+    }
+#else
+    (void)seed; (void)out; (void)count;
+#endif
+}
+
+// ─── Exponential: vectorized -log via libmvec ────────────────────────────────
+void fill_xoshiro256pp_x8_exponential_avx2(std::uint64_t seed, double* out,
+                                            std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const __m256d neg1 = _mm256_set1_pd(-1.0);
+
+    std::size_t i = 0;
+    while (i + 8 <= count) {
+        const __m256d ua = u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        const __m256d ub = u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+        // -log(u) = (-1) * log(u)
+        _mm256_storeu_pd(out + i,     _mm256_mul_pd(neg1, _ZGVdN4v_log(ua)));
+        _mm256_storeu_pd(out + i + 4, _mm256_mul_pd(neg1, _ZGVdN4v_log(ub)));
+        i += 8;
+    }
+    while (i + 4 <= count) {
+        const __m256d u = u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        _mm256_storeu_pd(out + i, _mm256_mul_pd(neg1, _ZGVdN4v_log(u)));
+        i += 4;
+    }
+    if (i < count) {
+        alignas(32) double tmp[4];
+        const __m256d u = u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        _mm256_store_pd(tmp, _mm256_mul_pd(neg1, _ZGVdN4v_log(u)));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tmp[lane];
+    }
+#else
+    (void)seed; (void)out; (void)count;
+#endif
+}
+
+// ─── Bernoulli: naive (generate uniform doubles, SIMD compare against p) ─────
+// This is what a user would naturally write: generate [0,1) doubles, then compare.
+// The conversion to double (shift + OR + subtract) is the overhead we want to skip.
+void fill_xoshiro256pp_x8_bernoulli_naive(std::uint64_t seed, double p,
+                                           double* out,
+                                           std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const __m256d p_vec = _mm256_set1_pd(p);
+    const __m256d one_d = _mm256_set1_pd(1.0);
+
+    std::size_t i = 0;
+    while (i + 8 <= count) {
+        const __m256d ua = u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        const __m256d ub = u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+        // u < p → mask of all-ones, AND with 1.0 → 1.0, else 0.0
+        _mm256_storeu_pd(out + i,
+            _mm256_and_pd(_mm256_cmp_pd(ua, p_vec, _CMP_LT_OQ), one_d));
+        _mm256_storeu_pd(out + i + 4,
+            _mm256_and_pd(_mm256_cmp_pd(ub, p_vec, _CMP_LT_OQ), one_d));
+        i += 8;
+    }
+    while (i + 4 <= count) {
+        const __m256d ua = u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        _mm256_storeu_pd(out + i,
+            _mm256_and_pd(_mm256_cmp_pd(ua, p_vec, _CMP_LT_OQ), one_d));
+        i += 4;
+    }
+    if (i < count) {
+        alignas(32) double tmp[4];
+        const __m256d ua = u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        _mm256_store_pd(tmp,
+            _mm256_and_pd(_mm256_cmp_pd(ua, p_vec, _CMP_LT_OQ), one_d));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tmp[lane];
+    }
+#else
+    (void)seed; (void)p; (void)out; (void)count;
+#endif
+}
+
+// ─── Bernoulli: fast (integer threshold, no float conversion) ────────────────
+// Compare raw uint64 output directly against a precomputed threshold.
+// The RNG output is uniform over [0, 2^64), so threshold = p * 2^64.
+// We use unsigned comparison: raw < threshold ↔ Bernoulli(p) success.
+// AVX2 only has signed cmpgt_epi64, so we flip the sign bit of both operands.
+void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
+                                          double* out,
+                                          std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const auto threshold = static_cast<std::uint64_t>(p * 0x1.0p64);
+    const __m256i sign_flip = _mm256_set1_epi64x(
+        static_cast<std::int64_t>(0x8000000000000000ULL));
+    const __m256i thresh_vec = _mm256_set1_epi64x(
+        static_cast<std::int64_t>(threshold ^ 0x8000000000000000ULL));
+    const __m256d one_d = _mm256_set1_pd(1.0);
+
+    std::size_t i = 0;
+    while (i + 8 <= count) {
+        const __m256i ra = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i rb = next_x4_avx2(b0, b1, b2, b3);
+        const __m256i cmp_a = _mm256_cmpgt_epi64(
+            thresh_vec, _mm256_xor_si256(ra, sign_flip));
+        const __m256i cmp_b = _mm256_cmpgt_epi64(
+            thresh_vec, _mm256_xor_si256(rb, sign_flip));
+        _mm256_storeu_pd(out + i,
+            _mm256_and_pd(_mm256_castsi256_pd(cmp_a), one_d));
+        _mm256_storeu_pd(out + i + 4,
+            _mm256_and_pd(_mm256_castsi256_pd(cmp_b), one_d));
+        i += 8;
+    }
+    while (i + 4 <= count) {
+        const __m256i ra = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i cmp_a = _mm256_cmpgt_epi64(
+            thresh_vec, _mm256_xor_si256(ra, sign_flip));
+        _mm256_storeu_pd(out + i,
+            _mm256_and_pd(_mm256_castsi256_pd(cmp_a), one_d));
+        i += 4;
+    }
+    if (i < count) {
+        alignas(32) double tmp[4];
+        const __m256i ra = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i cmp_a = _mm256_cmpgt_epi64(
+            thresh_vec, _mm256_xor_si256(ra, sign_flip));
+        _mm256_store_pd(tmp, _mm256_and_pd(_mm256_castsi256_pd(cmp_a), one_d));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tmp[lane];
+    }
+#else
+    (void)seed; (void)p; (void)out; (void)count;
+#endif
+}
+
 }  // namespace zorro_bench

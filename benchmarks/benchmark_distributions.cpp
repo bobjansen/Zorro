@@ -240,6 +240,22 @@ void fill_normals_xoshiro_x4_avx2(double* out, std::size_t count) {
 void fill_normals_xoshiro_plus_x4_avx2(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256p_x4_normal_polar_avx2(kSeed, out, count);
 }
+
+void fill_exponential_x8_naive(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_exponential_naive(kSeed, out, count);
+}
+
+void fill_exponential_x8_veclog(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_exponential_avx2(kSeed, out, count);
+}
+
+void fill_bernoulli_x8_naive(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_naive(kSeed, 0.3, out, count);
+}
+
+void fill_bernoulli_x8_fast(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_fast(kSeed, 0.3, out, count);
+}
 #endif
 
 void print_header() {
@@ -363,8 +379,28 @@ int main() {
                       zorro_bench::fill_normals_stephanfr_avx2_52_vecpolar));
 #endif
 
+    std::vector<BenchmarkResult> exponential_results;
+    exponential_results.reserve(4);
+#ifdef __AVX2__
+    exponential_results.push_back(run_benchmark("x8 AVX2 + scalar -log(u)",
+                                                fill_exponential_x8_naive));
+    exponential_results.push_back(run_benchmark("x8 AVX2 + veclog -log(u)",
+                                                fill_exponential_x8_veclog));
+#endif
+
+    std::vector<BenchmarkResult> bernoulli_results;
+    bernoulli_results.reserve(4);
+#ifdef __AVX2__
+    bernoulli_results.push_back(run_benchmark("x8 AVX2 naive (uniform + cmp)",
+                                              fill_bernoulli_x8_naive));
+    bernoulli_results.push_back(run_benchmark("x8 AVX2 fast (int threshold)",
+                                              fill_bernoulli_x8_fast));
+#endif
+
     print_results("Uniform(0, 1)", uniform_results);
     print_results("Normal(0, 1)", normal_results);
+    print_results("Exponential(1)", exponential_results);
+    print_results("Bernoulli(0.3)", bernoulli_results);
     std::cout << "checksum sink: " << std::setprecision(17) << g_checksum_sink
               << '\n';
     return EXIT_SUCCESS;
