@@ -259,7 +259,7 @@ void fill_bernoulli_x8_fast(double* out, std::size_t count) {
 #endif
 
 void print_header() {
-    std::cout << "Benchmark: 2^20 samples\n";
+    std::cout << "Benchmark: 2^24 samples\n";
     std::cout << "Samples:   " << kSampleCount << '\n';
     std::cout << "Seed:      0x" << std::hex << kSeed << std::dec << '\n';
     std::cout << "Warmups:   " << kWarmupIterations << '\n';
