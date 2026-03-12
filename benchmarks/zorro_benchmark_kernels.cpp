@@ -1,6 +1,7 @@
 #include "benchmarks/zorro_benchmark_kernels.hpp"
 
 #include <cmath>
+#include <vector>
 #ifdef __AVX2__
 #include <immintrin.h>
 // glibc libmvec: AVX2 4-wide double log
@@ -195,6 +196,13 @@ inline void seed_x8(std::uint64_t seed,
     }
 }
 #endif
+
+// Scalar xoshiro256++ step. Used by scalar and slow-path gamma/student-t code.
+inline auto next_pp(std::uint64_t (&s)[4]) noexcept -> std::uint64_t {
+    const std::uint64_t r = rotl64(s[0] + s[3], 23) + s[0];
+    state_advance(s);
+    return r;
+}
 
 }  // namespace
 
@@ -1192,6 +1200,378 @@ void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
 #else
     (void)seed; (void)p; (void)out; (void)count;
 #endif
+}
+
+// ─── Gamma(alpha, 1) — Marsaglia-Tsang algorithm ─────────────────────────────
+//
+// For shape alpha >= 1:  d = alpha − 1/3,  c = 1/√(9d)
+//   repeat:
+//     x  = N(0,1)  [polar method]
+//     v  = (1 + c·x)³;  reject if v ≤ 0
+//     u  = Uniform(0,1)
+//     fast-accept if u < 1 − 0.0331·x⁴               (~80 % of trials)
+//     slow-accept if log(u) < x²/2 + d·(1 − v + log v)
+//
+// Benchmarked at alpha = 2 → d = 5/3, c ≈ 0.447, MT acceptance ≈ 97 %.
+//
+// The thesis: "fused" keeps all RNG state in registers / L1; "decoupled"
+// writes intermediate normal and uniform buffers to heap, then reads them back,
+// adding ≈ 3 × count × 8 bytes of extra memory traffic.
+
+// ── scalar fused ─────────────────────────────────────────────────────────────
+// Single xoshiro256++ stream: polar N(0,1) and MT uniform drawn back-to-back.
+void fill_gamma_scalar_fused(std::uint64_t seed, double alpha, double* out,
+                              std::size_t count) noexcept {
+    std::uint64_t s[4] = {
+        splitmix64(seed), splitmix64(seed), splitmix64(seed), splitmix64(seed)};
+    const double d = alpha - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+    std::size_t i = 0;
+    while (i < count) {
+        double x;
+        for (;;) {
+            const double u1 = static_cast<double>(
+                static_cast<std::int64_t>(next_pp(s)) >> 11) * 0x1.0p-52;
+            const double u2 = static_cast<double>(
+                static_cast<std::int64_t>(next_pp(s)) >> 11) * 0x1.0p-52;
+            const double sq = u1 * u1 + u2 * u2;
+            if (sq >= 1.0 || sq == 0.0) continue;
+            x = u1 * std::sqrt(-2.0 * std::log(sq) / sq);
+            break;
+        }
+        const double vr = 1.0 + c * x;
+        if (vr <= 0.0) continue;
+        const double v  = vr * vr * vr;
+        const double u  = static_cast<double>(next_pp(s) >> 11) * 0x1.0p-53;
+        const double x2 = x * x;
+        if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+        if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+    }
+}
+
+// ── x8 AVX2 fused ────────────────────────────────────────────────────────────
+// Dual x4 streams (a, b) drive vecpolar for N(0,1); a 9th independent scalar
+// stream draws the MT acceptance uniform.  All three streams advance in the
+// same outer loop — buf_x (64 doubles = 512 B) stays in L1 throughout.
+void fill_gamma_x8_avx2_fused(std::uint64_t seed, double alpha, double* out,
+                               std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    // 9th independent stream: same base seed, then 8 long-jumps past a/b.
+    std::uint64_t sc[4];
+    {
+        std::uint64_t cseed = seed;
+        sc[0] = splitmix64(cseed); sc[1] = splitmix64(cseed);
+        sc[2] = splitmix64(cseed); sc[3] = splitmix64(cseed);
+        for (int j = 0; j < 8; ++j) long_jump(sc);
+    }
+
+    const double d = alpha - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+
+    static constexpr int kBuf = 64;
+    alignas(32) double buf_x[kBuf];  // accepted N(0,1) values; fits in L1
+
+    const __m256d one  = _mm256_set1_pd(1.0);
+    const __m256d zero = _mm256_setzero_pd();
+    const __m256d neg2 = _mm256_set1_pd(-2.0);
+    const __m256d safe = _mm256_set1_pd(0.5);  // safe substitute for rejected lanes
+
+    std::size_t i = 0;
+    while (i < count) {
+        // ── Phase 1: fill buf_x with kBuf N(0,1) values via x8 vecpolar ──────
+        int n = 0;
+        while (n < kBuf) {
+            // Group A (4 lanes)
+            const __m256d u1a = u64_to_pm1_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+            const __m256d u2a = u64_to_pm1_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+            const __m256d sq_a = _mm256_add_pd(_mm256_mul_pd(u1a, u1a),
+                                               _mm256_mul_pd(u2a, u2a));
+            const __m256d acc_a = _mm256_and_pd(_mm256_cmp_pd(sq_a, one, _CMP_LT_OQ),
+                                                _mm256_cmp_pd(sq_a, zero, _CMP_GT_OQ));
+            const int bits_a = _mm256_movemask_pd(acc_a);
+            if (bits_a) {
+                const __m256d sf_a = _mm256_blendv_pd(safe, sq_a, acc_a);
+                const __m256d fa   = _mm256_sqrt_pd(
+                    _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf_a)), sf_a));
+                alignas(32) double xa[4], xa2[4];
+                _mm256_store_pd(xa,  _mm256_mul_pd(u1a, fa));
+                _mm256_store_pd(xa2, _mm256_mul_pd(u2a, fa));
+                for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+                    if (bits_a & (1 << lane)) {
+                        buf_x[n++] = xa[lane];
+                        if (n < kBuf) buf_x[n++] = xa2[lane];
+                    }
+                }
+            }
+            // Group B (4 lanes)
+            const __m256d u1b = u64_to_pm1_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+            const __m256d u2b = u64_to_pm1_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+            const __m256d sq_b = _mm256_add_pd(_mm256_mul_pd(u1b, u1b),
+                                               _mm256_mul_pd(u2b, u2b));
+            const __m256d acc_b = _mm256_and_pd(_mm256_cmp_pd(sq_b, one, _CMP_LT_OQ),
+                                                _mm256_cmp_pd(sq_b, zero, _CMP_GT_OQ));
+            const int bits_b = _mm256_movemask_pd(acc_b);
+            if (bits_b) {
+                const __m256d sf_b = _mm256_blendv_pd(safe, sq_b, acc_b);
+                const __m256d fb   = _mm256_sqrt_pd(
+                    _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf_b)), sf_b));
+                alignas(32) double xb[4], xb2[4];
+                _mm256_store_pd(xb,  _mm256_mul_pd(u1b, fb));
+                _mm256_store_pd(xb2, _mm256_mul_pd(u2b, fb));
+                for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+                    if (bits_b & (1 << lane)) {
+                        buf_x[n++] = xb[lane];
+                        if (n < kBuf) buf_x[n++] = xb2[lane];
+                    }
+                }
+            }
+        }
+        // ── Phase 2: MT acceptance; uniform drawn from scalar stream sc ───────
+        for (int k = 0; k < n && i < count; ++k) {
+            const double x  = buf_x[k];
+            const double vr = 1.0 + c * x;
+            if (vr <= 0.0) continue;
+            const double v  = vr * vr * vr;
+            const double u  = static_cast<double>(next_pp(sc) >> 11) * 0x1.0p-53;
+            const double x2 = x * x;
+            if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+            if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+        }
+    }
+#else
+    fill_gamma_scalar_fused(seed, alpha, out, count);
+#endif
+}
+
+// ── x8 AVX2 decoupled: pre-fill normal and uniform buffers, then apply MT ────
+// Pass 1 writes ~1.25×count normals to heap.
+// Pass 2 writes ~1.25×count uniforms to heap.
+// Pass 3 reads both back and applies MT.
+// Demonstrates the memory-bandwidth cost of separating generation from transform.
+void fill_gamma_x8_avx2_decoupled(std::uint64_t seed, double alpha, double* out,
+                                   std::size_t count) noexcept {
+    const std::size_t n_over = count + (count >> 2) + 16;  // 1.25× + headroom
+    std::vector<double> norm_buf(n_over), unif_buf(n_over);
+
+    fill_xoshiro256pp_x8_normal_vecpolar_avx2(seed, norm_buf.data(), n_over);
+    fill_xoshiro256pp_x8_uniform01_avx2(seed ^ 0x9e3779b97f4a7c15ULL,
+                                        unif_buf.data(), n_over);
+
+    const double d = alpha - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+    std::size_t j = 0, k = 0, i = 0;
+    while (i < count) {
+        const double x  = norm_buf[j++];
+        const double vr = 1.0 + c * x;
+        if (vr <= 0.0) continue;
+        const double v  = vr * vr * vr;
+        const double u  = unif_buf[k++];
+        const double x2 = x * x;
+        if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+        if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+    }
+}
+
+// ─── Student's t(nu) — t = N(0,1) / sqrt(2·Gamma(nu/2, 1)/nu) ───────────────
+//
+// Benchmarked at nu = 5  →  Gamma shape = 2.5, d = 13/6, acceptance ≈ 98 %.
+// Each output sample needs: one N(0,1) for Z plus one Gamma(nu/2) for V.
+//
+// Fused: Z and V generated in the same loop from the same stream(s).
+// Decoupled: pre-fill a Z buffer and a V buffer, then combine — extra 2 passes.
+
+// ── scalar fused ─────────────────────────────────────────────────────────────
+void fill_student_t_scalar_fused(std::uint64_t seed, double nu, double* out,
+                                  std::size_t count) noexcept {
+    std::uint64_t s[4] = {
+        splitmix64(seed), splitmix64(seed), splitmix64(seed), splitmix64(seed)};
+    const double shape = nu / 2.0;
+    const double d = shape - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+
+    std::size_t i = 0;
+    while (i < count) {
+        // Z ~ N(0,1) for numerator
+        double z;
+        for (;;) {
+            const double r1 = static_cast<double>(
+                static_cast<std::int64_t>(next_pp(s)) >> 11) * 0x1.0p-52;
+            const double r2 = static_cast<double>(
+                static_cast<std::int64_t>(next_pp(s)) >> 11) * 0x1.0p-52;
+            const double sq = r1 * r1 + r2 * r2;
+            if (sq >= 1.0 || sq == 0.0) continue;
+            z = r1 * std::sqrt(-2.0 * std::log(sq) / sq);
+            break;
+        }
+        // V ~ Gamma(shape, 1) for denominator; same stream s
+        double gamma_v;
+        for (;;) {
+            double x;
+            for (;;) {
+                const double r1 = static_cast<double>(
+                    static_cast<std::int64_t>(next_pp(s)) >> 11) * 0x1.0p-52;
+                const double r2 = static_cast<double>(
+                    static_cast<std::int64_t>(next_pp(s)) >> 11) * 0x1.0p-52;
+                const double sq = r1 * r1 + r2 * r2;
+                if (sq >= 1.0 || sq == 0.0) continue;
+                x = r1 * std::sqrt(-2.0 * std::log(sq) / sq);
+                break;
+            }
+            const double vr = 1.0 + c * x;
+            if (vr <= 0.0) continue;
+            const double v  = vr * vr * vr;
+            const double u  = static_cast<double>(next_pp(s) >> 11) * 0x1.0p-53;
+            const double x2 = x * x;
+            if (u < 1.0 - 0.0331 * x2 * x2) { gamma_v = d * v; break; }
+            if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { gamma_v = d * v; break; }
+        }
+        out[i++] = z / std::sqrt(2.0 * gamma_v / nu);
+    }
+}
+
+// ── x8 AVX2 fused ────────────────────────────────────────────────────────────
+// Streams a+b (x8 AVX2) produce N(0,1) numerators via vecpolar into buf_z.
+// Scalar stream sc generates the Gamma denominator for each z immediately.
+// Both streams advance in the same outer loop; buf_z (64 doubles) stays in L1.
+void fill_student_t_x8_avx2_fused(std::uint64_t seed, double nu, double* out,
+                                   std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    std::uint64_t sc[4];
+    {
+        std::uint64_t cseed = seed;
+        sc[0] = splitmix64(cseed); sc[1] = splitmix64(cseed);
+        sc[2] = splitmix64(cseed); sc[3] = splitmix64(cseed);
+        for (int j = 0; j < 8; ++j) long_jump(sc);
+    }
+
+    const double shape = nu / 2.0;
+    const double d = shape - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+
+    static constexpr int kBuf = 64;
+    alignas(32) double buf_z[kBuf];
+
+    const __m256d one  = _mm256_set1_pd(1.0);
+    const __m256d zero = _mm256_setzero_pd();
+    const __m256d neg2 = _mm256_set1_pd(-2.0);
+    const __m256d safe = _mm256_set1_pd(0.5);
+
+    std::size_t i = 0;
+    while (i < count) {
+        // ── Phase 1: fill buf_z with kBuf N(0,1) numerators ──────────────────
+        int n = 0;
+        while (n < kBuf) {
+            const __m256d u1a = u64_to_pm1_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+            const __m256d u2a = u64_to_pm1_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+            const __m256d sq_a = _mm256_add_pd(_mm256_mul_pd(u1a, u1a),
+                                               _mm256_mul_pd(u2a, u2a));
+            const __m256d acc_a = _mm256_and_pd(_mm256_cmp_pd(sq_a, one, _CMP_LT_OQ),
+                                                _mm256_cmp_pd(sq_a, zero, _CMP_GT_OQ));
+            const int bits_a = _mm256_movemask_pd(acc_a);
+            if (bits_a) {
+                const __m256d sf = _mm256_blendv_pd(safe, sq_a, acc_a);
+                const __m256d fa = _mm256_sqrt_pd(
+                    _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf)), sf));
+                alignas(32) double za[4], za2[4];
+                _mm256_store_pd(za,  _mm256_mul_pd(u1a, fa));
+                _mm256_store_pd(za2, _mm256_mul_pd(u2a, fa));
+                for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+                    if (bits_a & (1 << lane)) {
+                        buf_z[n++] = za[lane];
+                        if (n < kBuf) buf_z[n++] = za2[lane];
+                    }
+                }
+            }
+            const __m256d u1b = u64_to_pm1_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+            const __m256d u2b = u64_to_pm1_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+            const __m256d sq_b = _mm256_add_pd(_mm256_mul_pd(u1b, u1b),
+                                               _mm256_mul_pd(u2b, u2b));
+            const __m256d acc_b = _mm256_and_pd(_mm256_cmp_pd(sq_b, one, _CMP_LT_OQ),
+                                                _mm256_cmp_pd(sq_b, zero, _CMP_GT_OQ));
+            const int bits_b = _mm256_movemask_pd(acc_b);
+            if (bits_b) {
+                const __m256d sf = _mm256_blendv_pd(safe, sq_b, acc_b);
+                const __m256d fb = _mm256_sqrt_pd(
+                    _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf)), sf));
+                alignas(32) double zb[4], zb2[4];
+                _mm256_store_pd(zb,  _mm256_mul_pd(u1b, fb));
+                _mm256_store_pd(zb2, _mm256_mul_pd(u2b, fb));
+                for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+                    if (bits_b & (1 << lane)) {
+                        buf_z[n++] = zb[lane];
+                        if (n < kBuf) buf_z[n++] = zb2[lane];
+                    }
+                }
+            }
+        }
+        // ── Phase 2: for each z, generate Gamma(shape) from stream sc ─────────
+        for (int k = 0; k < n && i < count; ++k) {
+            const double z = buf_z[k];
+            double gamma_v;
+            for (;;) {
+                double x;
+                for (;;) {
+                    const double r1 = static_cast<double>(
+                        static_cast<std::int64_t>(next_pp(sc)) >> 11) * 0x1.0p-52;
+                    const double r2 = static_cast<double>(
+                        static_cast<std::int64_t>(next_pp(sc)) >> 11) * 0x1.0p-52;
+                    const double sq = r1 * r1 + r2 * r2;
+                    if (sq >= 1.0 || sq == 0.0) continue;
+                    x = r1 * std::sqrt(-2.0 * std::log(sq) / sq);
+                    break;
+                }
+                const double vr = 1.0 + c * x;
+                if (vr <= 0.0) continue;
+                const double v  = vr * vr * vr;
+                const double u  = static_cast<double>(next_pp(sc) >> 11) * 0x1.0p-53;
+                const double x2 = x * x;
+                if (u < 1.0 - 0.0331 * x2 * x2) { gamma_v = d * v; break; }
+                if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { gamma_v = d * v; break; }
+            }
+            out[i++] = z / std::sqrt(2.0 * gamma_v / nu);
+        }
+    }
+#else
+    fill_student_t_scalar_fused(seed, nu, out, count);
+#endif
+}
+
+// ── x8 AVX2 decoupled ────────────────────────────────────────────────────────
+// Pre-fills a Z buffer and a Gamma buffer independently, then combines.
+// Adds 2 full heap-write passes + 2 full heap-read passes relative to fused.
+void fill_student_t_x8_avx2_decoupled(std::uint64_t seed, double nu, double* out,
+                                       std::size_t count) noexcept {
+    std::vector<double> z_buf(count), g_buf(count);
+    fill_xoshiro256pp_x8_normal_vecpolar_avx2(seed, z_buf.data(), count);
+    fill_gamma_x8_avx2_fused(seed ^ 0x9e3779b97f4a7c15ULL, nu / 2.0, g_buf.data(), count);
+    for (std::size_t i = 0; i < count; ++i)
+        out[i] = z_buf[i] / std::sqrt(2.0 * g_buf[i] / nu);
 }
 
 }  // namespace zorro_bench

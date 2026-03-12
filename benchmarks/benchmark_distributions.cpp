@@ -258,6 +258,32 @@ void fill_bernoulli_x8_fast(double* out, std::size_t count) {
 }
 #endif
 
+// ── Gamma(2, 1) ──────────────────────────────────────────────────────────────
+void fill_gamma_scalar(double* out, std::size_t count) {
+    zorro_bench::fill_gamma_scalar_fused(kSeed, 2.0, out, count);
+}
+#ifdef __AVX2__
+void fill_gamma_avx2_fused(double* out, std::size_t count) {
+    zorro_bench::fill_gamma_x8_avx2_fused(kSeed, 2.0, out, count);
+}
+void fill_gamma_avx2_decoupled(double* out, std::size_t count) {
+    zorro_bench::fill_gamma_x8_avx2_decoupled(kSeed, 2.0, out, count);
+}
+#endif
+
+// ── Student's t(5) ───────────────────────────────────────────────────────────
+void fill_student_t_scalar(double* out, std::size_t count) {
+    zorro_bench::fill_student_t_scalar_fused(kSeed, 5.0, out, count);
+}
+#ifdef __AVX2__
+void fill_student_t_avx2_fused(double* out, std::size_t count) {
+    zorro_bench::fill_student_t_x8_avx2_fused(kSeed, 5.0, out, count);
+}
+void fill_student_t_avx2_decoupled(double* out, std::size_t count) {
+    zorro_bench::fill_student_t_x8_avx2_decoupled(kSeed, 5.0, out, count);
+}
+#endif
+
 void print_header() {
     std::cout << "Benchmark: 2^24 samples\n";
     std::cout << "Samples:   " << kSampleCount << '\n';
@@ -397,10 +423,28 @@ int main() {
                                               fill_bernoulli_x8_fast));
 #endif
 
+    std::vector<BenchmarkResult> gamma_results;
+    gamma_results.reserve(4);
+    gamma_results.push_back(run_benchmark("scalar fused",          fill_gamma_scalar));
+#ifdef __AVX2__
+    gamma_results.push_back(run_benchmark("x8 AVX2 fused",         fill_gamma_avx2_fused));
+    gamma_results.push_back(run_benchmark("x8 AVX2 decoupled",     fill_gamma_avx2_decoupled));
+#endif
+
+    std::vector<BenchmarkResult> student_t_results;
+    student_t_results.reserve(4);
+    student_t_results.push_back(run_benchmark("scalar fused",      fill_student_t_scalar));
+#ifdef __AVX2__
+    student_t_results.push_back(run_benchmark("x8 AVX2 fused",     fill_student_t_avx2_fused));
+    student_t_results.push_back(run_benchmark("x8 AVX2 decoupled", fill_student_t_avx2_decoupled));
+#endif
+
     print_results("Uniform(0, 1)", uniform_results);
     print_results("Normal(0, 1)", normal_results);
     print_results("Exponential(1)", exponential_results);
     print_results("Bernoulli(0.3)", bernoulli_results);
+    print_results("Gamma(2, 1)", gamma_results);
+    print_results("Student's t(5)", student_t_results);
     std::cout << "checksum sink: " << std::setprecision(17) << g_checksum_sink
               << '\n';
     return EXIT_SUCCESS;
