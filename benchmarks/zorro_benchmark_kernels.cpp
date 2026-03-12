@@ -6,6 +6,11 @@
 // glibc libmvec: AVX2 4-wide double log
 extern "C" __m256d _ZGVdN4v_log(__m256d) noexcept;
 #endif
+#ifdef __AVX512F__
+#include <immintrin.h>
+// glibc libmvec: AVX-512 8-wide double log
+extern "C" __m512d _ZGVeN8v_log(__m512d) noexcept;
+#endif
 
 // Benchmark-only kernels. The public library surface remains in zorro/zorro.hpp.
 
@@ -195,6 +200,79 @@ inline void seed_x8(std::uint64_t seed,
     }
 }
 #endif
+
+#ifdef __AVX512F__
+
+// ── AVX-512 helpers ──────────────────────────────────────────────────────────
+
+// Rotate-left for 64-bit lanes in a 512-bit register.
+// _mm512_rol_epi64 is available in base AVX-512F — no VL qualifier needed.
+template <int k>
+inline auto rotl64_avx512(__m512i x) noexcept -> __m512i {
+    return _mm512_rol_epi64(x, k);
+}
+
+// xoshiro256++ step for 8 independent streams packed into four __m512i registers.
+// Identical arithmetic to next_x4_avx2; every __m256i intrinsic becomes __m512i.
+inline auto next_x8_avx512(__m512i& s0, __m512i& s1, __m512i& s2,
+                            __m512i& s3) noexcept -> __m512i {
+    const __m512i result =
+        _mm512_add_epi64(rotl64_avx512<23>(_mm512_add_epi64(s0, s3)), s0);
+    const __m512i t = _mm512_slli_epi64(s1, 17);
+    s2 = _mm512_xor_si512(s2, s0);
+    s3 = _mm512_xor_si512(s3, s1);
+    s1 = _mm512_xor_si512(s1, s2);
+    s0 = _mm512_xor_si512(s0, s3);
+    s2 = _mm512_xor_si512(s2, t);
+    s3 = rotl64_avx512<45>(s3);
+    return result;
+}
+
+// Map 8 raw 64-bit values to doubles in [0, 1) using the same mantissa-force
+// trick as u64_to_uniform01_52_avx2: discard top 12 bits, OR in exponent 0x3FF,
+// reinterpret as doubles in [1.0, 2.0), subtract 1.0.
+inline auto u64_to_uniform01_52_avx512(__m512i bits) noexcept -> __m512d {
+    const __m512i exponent =
+        _mm512_set1_epi64(static_cast<std::int64_t>(0x3ff0000000000000ULL));
+    const __m512d one = _mm512_set1_pd(1.0);
+    const __m512i mantissa = _mm512_srli_epi64(bits, 12);
+    const __m512d one_to_two =
+        _mm512_castsi512_pd(_mm512_or_si512(mantissa, exponent));
+    return _mm512_sub_pd(one_to_two, one);
+}
+
+// Map 8 raw 64-bit values to doubles in (-1, 1): [0,1)*2 - 1.
+inline auto u64_to_pm1_52_avx512(__m512i bits) noexcept -> __m512d {
+    const __m512d two = _mm512_set1_pd(2.0);
+    const __m512d one = _mm512_set1_pd(1.0);
+    return _mm512_sub_pd(_mm512_mul_pd(u64_to_uniform01_52_avx512(bits), two), one);
+}
+
+// Seed one group of 8 independent lanes into 64-byte-aligned SoA arrays.
+inline void seed_x8_avx512(std::uint64_t seed,
+                            std::uint64_t (&s0)[8], std::uint64_t (&s1)[8],
+                            std::uint64_t (&s2)[8], std::uint64_t (&s3)[8]) noexcept {
+    seed_lanes(seed, 8, s0, s1, s2, s3);
+}
+
+// Seed two groups of 8 lanes (16 total).  Each group gets 8 streams spaced
+// 2^192 apart; the two groups are also separated by 2^192 from each other.
+inline void seed_x16_avx512(std::uint64_t seed,
+                             std::uint64_t (&sa0)[8], std::uint64_t (&sa1)[8],
+                             std::uint64_t (&sa2)[8], std::uint64_t (&sa3)[8],
+                             std::uint64_t (&sb0)[8], std::uint64_t (&sb1)[8],
+                             std::uint64_t (&sb2)[8], std::uint64_t (&sb3)[8]) noexcept {
+    std::uint64_t all0[16], all1[16], all2[16], all3[16];
+    seed_lanes(seed, 16, all0, all1, all2, all3);
+    for (int lane = 0; lane < 8; ++lane) {
+        sa0[lane] = all0[lane];     sa1[lane] = all1[lane];
+        sa2[lane] = all2[lane];     sa3[lane] = all3[lane];
+        sb0[lane] = all0[lane + 8]; sb1[lane] = all1[lane + 8];
+        sb2[lane] = all2[lane + 8]; sb3[lane] = all3[lane + 8];
+    }
+}
+
+#endif  // __AVX512F__
 
 }  // namespace
 
@@ -1191,6 +1269,270 @@ void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
     }
 #else
     (void)seed; (void)p; (void)out; (void)count;
+#endif
+}
+
+// ─── AVX-512: uniform, 8 lanes (single __m512i group) ────────────────────────
+void fill_xoshiro256pp_x8_uniform01_avx512(std::uint64_t seed, double* out,
+                                            std::size_t count) noexcept {
+#ifdef __AVX512F__
+    alignas(64) std::uint64_t state0[8], state1[8], state2[8], state3[8];
+    alignas(64) double tail[8];
+    seed_x8_avx512(seed, state0, state1, state2, state3);
+
+    __m512i s0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(state0));
+    __m512i s1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(state1));
+    __m512i s2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(state2));
+    __m512i s3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(state3));
+
+    std::size_t i = 0;
+    while (i + 8 <= count) {
+        _mm512_storeu_pd(out + i, u64_to_uniform01_52_avx512(next_x8_avx512(s0, s1, s2, s3)));
+        i += 8;
+    }
+    if (i < count) {
+        _mm512_store_pd(tail, u64_to_uniform01_52_avx512(next_x8_avx512(s0, s1, s2, s3)));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tail[lane];
+    }
+#else
+    fill_xoshiro256pp_x8_uniform01_avx2(seed, out, count);
+#endif
+}
+
+// ─── AVX-512: uniform, 16 lanes (two __m512i groups, 8×2) ────────────────────
+// Two independent 8-lane groups advance in lockstep, producing 16 outputs per
+// iteration.  The two chains share no registers, so the CPU can pipeline them.
+void fill_xoshiro256pp_x16_uniform01_avx512(std::uint64_t seed, double* out,
+                                             std::size_t count) noexcept {
+#ifdef __AVX512F__
+    alignas(64) std::uint64_t sa0[8], sa1[8], sa2[8], sa3[8];
+    alignas(64) std::uint64_t sb0[8], sb1[8], sb2[8], sb3[8];
+    alignas(64) double tail[8];
+    seed_x16_avx512(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m512i a0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa0));
+    __m512i a1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa1));
+    __m512i a2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa2));
+    __m512i a3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa3));
+    __m512i b0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb0));
+    __m512i b1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb1));
+    __m512i b2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb2));
+    __m512i b3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb3));
+
+    std::size_t i = 0;
+    while (i + 16 <= count) {
+        _mm512_storeu_pd(out + i,     u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3)));
+        _mm512_storeu_pd(out + i + 8, u64_to_uniform01_52_avx512(next_x8_avx512(b0, b1, b2, b3)));
+        i += 16;
+    }
+    while (i + 8 <= count) {
+        _mm512_storeu_pd(out + i, u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3)));
+        i += 8;
+    }
+    if (i < count) {
+        _mm512_store_pd(tail, u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3)));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tail[lane];
+    }
+#else
+    fill_xoshiro256pp_x16_uniform01_avx512(seed, out, count);
+#endif
+}
+
+// ─── AVX-512: normal, vecpolar with mask_compressstoreu ──────────────────────
+// Two 8-lane groups.  Rejection test returns an 8-bit predicate mask (__mmask8)
+// that drives _mm512_mask_compressstoreu_pd — no 128-bit extraction loop needed.
+// Accepted pairs are packed into a small buffer then written to output.
+void fill_xoshiro256pp_x16_normal_vecpolar_avx512(std::uint64_t seed, double* out,
+                                                   std::size_t count) noexcept {
+#ifdef __AVX512F__
+    alignas(64) std::uint64_t sa0[8], sa1[8], sa2[8], sa3[8];
+    alignas(64) std::uint64_t sb0[8], sb1[8], sb2[8], sb3[8];
+    seed_x16_avx512(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m512i a0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa0));
+    __m512i a1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa1));
+    __m512i a2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa2));
+    __m512i a3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa3));
+    __m512i b0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb0));
+    __m512i b1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb1));
+    __m512i b2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb2));
+    __m512i b3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb3));
+
+    const __m512d one     = _mm512_set1_pd(1.0);
+    const __m512d zero    = _mm512_setzero_pd();
+    const __m512d neg2    = _mm512_set1_pd(-2.0);
+    const __m512d safe_val = _mm512_set1_pd(0.5);
+
+    std::size_t i = 0;
+    while (i < count) {
+        // ── Group a (8 lanes) ─────────────────────────────────────────────────
+        {
+            const __m512d u1 = u64_to_pm1_52_avx512(next_x8_avx512(a0, a1, a2, a3));
+            const __m512d u2 = u64_to_pm1_52_avx512(next_x8_avx512(a0, a1, a2, a3));
+            const __m512d s  = _mm512_add_pd(_mm512_mul_pd(u1, u1),
+                                             _mm512_mul_pd(u2, u2));
+            // Native unsigned-style mask: 0 < s < 1 in one expression
+            const __mmask8 accept =
+                _mm512_cmp_pd_mask(s, one,  _CMP_LT_OQ) &
+                _mm512_cmp_pd_mask(s, zero, _CMP_GT_OQ);
+            if (accept) {
+                // Blend safe value for rejected lanes before log (no NaN/inf)
+                const __m512d safe_s = _mm512_mask_blend_pd(accept, safe_val, s);
+                const __m512d log_s  = _ZGVeN8v_log(safe_s);
+                const __m512d factor = _mm512_sqrt_pd(
+                    _mm512_div_pd(_mm512_mul_pd(neg2, log_s), safe_s));
+                const __m512d n1 = _mm512_mul_pd(u1, factor);
+                const __m512d n2 = _mm512_mul_pd(u2, factor);
+
+                // Compress accepted lanes to a contiguous buffer, then write pairs
+                alignas(64) double tmp1[8], tmp2[8];
+                const int naccepted = __builtin_popcount(accept);
+                _mm512_mask_compressstoreu_pd(tmp1, accept, n1);
+                _mm512_mask_compressstoreu_pd(tmp2, accept, n2);
+                for (int k = 0; k < naccepted && i < count; ++k) {
+                    out[i++] = tmp1[k];
+                    if (i < count) out[i++] = tmp2[k];
+                }
+            }
+        }
+
+        if (i >= count) break;
+
+        // ── Group b (8 lanes) ─────────────────────────────────────────────────
+        {
+            const __m512d u1 = u64_to_pm1_52_avx512(next_x8_avx512(b0, b1, b2, b3));
+            const __m512d u2 = u64_to_pm1_52_avx512(next_x8_avx512(b0, b1, b2, b3));
+            const __m512d s  = _mm512_add_pd(_mm512_mul_pd(u1, u1),
+                                             _mm512_mul_pd(u2, u2));
+            const __mmask8 accept =
+                _mm512_cmp_pd_mask(s, one,  _CMP_LT_OQ) &
+                _mm512_cmp_pd_mask(s, zero, _CMP_GT_OQ);
+            if (accept) {
+                const __m512d safe_s = _mm512_mask_blend_pd(accept, safe_val, s);
+                const __m512d log_s  = _ZGVeN8v_log(safe_s);
+                const __m512d factor = _mm512_sqrt_pd(
+                    _mm512_div_pd(_mm512_mul_pd(neg2, log_s), safe_s));
+                const __m512d n1 = _mm512_mul_pd(u1, factor);
+                const __m512d n2 = _mm512_mul_pd(u2, factor);
+
+                alignas(64) double tmp1[8], tmp2[8];
+                const int naccepted = __builtin_popcount(accept);
+                _mm512_mask_compressstoreu_pd(tmp1, accept, n1);
+                _mm512_mask_compressstoreu_pd(tmp2, accept, n2);
+                for (int k = 0; k < naccepted && i < count; ++k) {
+                    out[i++] = tmp1[k];
+                    if (i < count) out[i++] = tmp2[k];
+                }
+            }
+        }
+    }
+#else
+    fill_xoshiro256pp_x8_normal_vecpolar_avx2(seed, out, count);
+#endif
+}
+
+// ─── AVX-512: exponential, 8-wide log via libmvec _ZGVeN8v_log ───────────────
+// Two 8-lane groups drive _ZGVeN8v_log, producing 16 exponential samples per
+// iteration vs the AVX2 variant's 8.
+void fill_xoshiro256pp_x16_exponential_avx512(std::uint64_t seed, double* out,
+                                               std::size_t count) noexcept {
+#ifdef __AVX512F__
+    alignas(64) std::uint64_t sa0[8], sa1[8], sa2[8], sa3[8];
+    alignas(64) std::uint64_t sb0[8], sb1[8], sb2[8], sb3[8];
+    alignas(64) double tail[8];
+    seed_x16_avx512(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m512i a0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa0));
+    __m512i a1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa1));
+    __m512i a2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa2));
+    __m512i a3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa3));
+    __m512i b0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb0));
+    __m512i b1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb1));
+    __m512i b2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb2));
+    __m512i b3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb3));
+
+    const __m512d neg1 = _mm512_set1_pd(-1.0);
+
+    std::size_t i = 0;
+    while (i + 16 <= count) {
+        const __m512d ua = u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3));
+        const __m512d ub = u64_to_uniform01_52_avx512(next_x8_avx512(b0, b1, b2, b3));
+        _mm512_storeu_pd(out + i,      _mm512_mul_pd(neg1, _ZGVeN8v_log(ua)));
+        _mm512_storeu_pd(out + i + 8,  _mm512_mul_pd(neg1, _ZGVeN8v_log(ub)));
+        i += 16;
+    }
+    while (i + 8 <= count) {
+        const __m512d ua = u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3));
+        _mm512_storeu_pd(out + i, _mm512_mul_pd(neg1, _ZGVeN8v_log(ua)));
+        i += 8;
+    }
+    if (i < count) {
+        const __m512d ua = u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3));
+        _mm512_store_pd(tail, _mm512_mul_pd(neg1, _ZGVeN8v_log(ua)));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tail[lane];
+    }
+#else
+    fill_xoshiro256pp_x8_exponential_avx2(seed, out, count);
+#endif
+}
+
+// ─── AVX-512: Bernoulli with native unsigned 64-bit comparison ───────────────
+// AVX-512F provides _mm512_cmp_epu64_mask for true unsigned compare, eliminating
+// the sign-flip workaround required by AVX2's signed-only _mm256_cmpgt_epi64.
+// The result is a compact __mmask8 used directly with _mm512_maskz_mov_pd.
+void fill_xoshiro256pp_x16_bernoulli_avx512(std::uint64_t seed, double p,
+                                             double* out,
+                                             std::size_t count) noexcept {
+#ifdef __AVX512F__
+    alignas(64) std::uint64_t sa0[8], sa1[8], sa2[8], sa3[8];
+    alignas(64) std::uint64_t sb0[8], sb1[8], sb2[8], sb3[8];
+    seed_x16_avx512(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m512i a0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa0));
+    __m512i a1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa1));
+    __m512i a2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa2));
+    __m512i a3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa3));
+    __m512i b0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb0));
+    __m512i b1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb1));
+    __m512i b2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb2));
+    __m512i b3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb3));
+
+    const auto threshold = static_cast<std::uint64_t>(p * 0x1.0p64);
+    const __m512i thresh_vec = _mm512_set1_epi64(
+        static_cast<std::int64_t>(threshold));
+    const __m512d one_d = _mm512_set1_pd(1.0);
+
+    std::size_t i = 0;
+    while (i + 16 <= count) {
+        const __m512i ra = next_x8_avx512(a0, a1, a2, a3);
+        const __m512i rb = next_x8_avx512(b0, b1, b2, b3);
+        // Native unsigned compare: mask bit set ↔ ra[lane] < threshold
+        const __mmask8 mask_a = _mm512_cmp_epu64_mask(ra, thresh_vec, _MM_CMPINT_LT);
+        const __mmask8 mask_b = _mm512_cmp_epu64_mask(rb, thresh_vec, _MM_CMPINT_LT);
+        // 1.0 where mask bit is set, 0.0 elsewhere
+        _mm512_storeu_pd(out + i,      _mm512_maskz_mov_pd(mask_a, one_d));
+        _mm512_storeu_pd(out + i + 8,  _mm512_maskz_mov_pd(mask_b, one_d));
+        i += 16;
+    }
+    while (i + 8 <= count) {
+        const __m512i ra = next_x8_avx512(a0, a1, a2, a3);
+        const __mmask8 mask_a = _mm512_cmp_epu64_mask(ra, thresh_vec, _MM_CMPINT_LT);
+        _mm512_storeu_pd(out + i, _mm512_maskz_mov_pd(mask_a, one_d));
+        i += 8;
+    }
+    if (i < count) {
+        alignas(64) double tmp[8];
+        const __m512i ra = next_x8_avx512(a0, a1, a2, a3);
+        const __mmask8 mask_a = _mm512_cmp_epu64_mask(ra, thresh_vec, _MM_CMPINT_LT);
+        _mm512_store_pd(tmp, _mm512_maskz_mov_pd(mask_a, one_d));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tmp[lane];
+    }
+#else
+    fill_xoshiro256pp_x8_bernoulli_fast(seed, p, out, count);
 #endif
 }
 
