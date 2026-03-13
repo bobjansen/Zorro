@@ -1326,14 +1326,22 @@ void fill_xoshiro256pp_x16_uniform01_avx512(std::uint64_t seed, double* out,
         _mm512_storeu_pd(out + i + 8, u64_to_uniform01_52_avx512(next_x8_avx512(b0, b1, b2, b3)));
         i += 16;
     }
-    while (i + 8 <= count) {
-        _mm512_storeu_pd(out + i, u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3)));
-        i += 8;
-    }
+    // Partial last iteration: remaining < 16.
+    // Even group (positions i..i+7): chain a.  Odd group (i+8..count-1): chain b.
     if (i < count) {
-        _mm512_store_pd(tail, u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3)));
-        for (std::size_t lane = 0; i < count; ++lane, ++i)
-            out[i] = tail[lane];
+        if (i + 8 <= count) {
+            _mm512_storeu_pd(out + i, u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3)));
+            i += 8;
+        } else {
+            _mm512_store_pd(tail, u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3)));
+            for (std::size_t lane = 0; i < count; ++lane, ++i)
+                out[i] = tail[lane];
+        }
+        if (i < count) {
+            _mm512_store_pd(tail, u64_to_uniform01_52_avx512(next_x8_avx512(b0, b1, b2, b3)));
+            for (std::size_t lane = 0; i < count; ++lane, ++i)
+                out[i] = tail[lane];
+        }
     }
 #else
     fill_xoshiro256pp_x16_uniform01_avx512(seed, out, count);
@@ -1463,16 +1471,24 @@ void fill_xoshiro256pp_x16_exponential_avx512(std::uint64_t seed, double* out,
         _mm512_storeu_pd(out + i + 8,  _mm512_mul_pd(neg1, _ZGVeN8v_log(ub)));
         i += 16;
     }
-    while (i + 8 <= count) {
-        const __m512d ua = u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3));
-        _mm512_storeu_pd(out + i, _mm512_mul_pd(neg1, _ZGVeN8v_log(ua)));
-        i += 8;
-    }
     if (i < count) {
-        const __m512d ua = u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3));
-        _mm512_store_pd(tail, _mm512_mul_pd(neg1, _ZGVeN8v_log(ua)));
-        for (std::size_t lane = 0; i < count; ++lane, ++i)
-            out[i] = tail[lane];
+        const __m512d va = _mm512_mul_pd(neg1, _ZGVeN8v_log(
+            u64_to_uniform01_52_avx512(next_x8_avx512(a0, a1, a2, a3))));
+        if (i + 8 <= count) {
+            _mm512_storeu_pd(out + i, va);
+            i += 8;
+        } else {
+            _mm512_store_pd(tail, va);
+            for (std::size_t lane = 0; i < count; ++lane, ++i)
+                out[i] = tail[lane];
+        }
+        if (i < count) {
+            const __m512d vb = _mm512_mul_pd(neg1, _ZGVeN8v_log(
+                u64_to_uniform01_52_avx512(next_x8_avx512(b0, b1, b2, b3))));
+            _mm512_store_pd(tail, vb);
+            for (std::size_t lane = 0; i < count; ++lane, ++i)
+                out[i] = tail[lane];
+        }
     }
 #else
     fill_xoshiro256pp_x8_exponential_avx2(seed, out, count);
@@ -1517,19 +1533,25 @@ void fill_xoshiro256pp_x16_bernoulli_avx512(std::uint64_t seed, double p,
         _mm512_storeu_pd(out + i + 8,  _mm512_maskz_mov_pd(mask_b, one_d));
         i += 16;
     }
-    while (i + 8 <= count) {
-        const __m512i ra = next_x8_avx512(a0, a1, a2, a3);
-        const __mmask8 mask_a = _mm512_cmp_epu64_mask(ra, thresh_vec, _MM_CMPINT_LT);
-        _mm512_storeu_pd(out + i, _mm512_maskz_mov_pd(mask_a, one_d));
-        i += 8;
-    }
     if (i < count) {
         alignas(64) double tmp[8];
-        const __m512i ra = next_x8_avx512(a0, a1, a2, a3);
-        const __mmask8 mask_a = _mm512_cmp_epu64_mask(ra, thresh_vec, _MM_CMPINT_LT);
-        _mm512_store_pd(tmp, _mm512_maskz_mov_pd(mask_a, one_d));
-        for (std::size_t lane = 0; i < count; ++lane, ++i)
-            out[i] = tmp[lane];
+        const __mmask8 mask_a = _mm512_cmp_epu64_mask(
+            next_x8_avx512(a0, a1, a2, a3), thresh_vec, _MM_CMPINT_LT);
+        if (i + 8 <= count) {
+            _mm512_storeu_pd(out + i, _mm512_maskz_mov_pd(mask_a, one_d));
+            i += 8;
+        } else {
+            _mm512_store_pd(tmp, _mm512_maskz_mov_pd(mask_a, one_d));
+            for (std::size_t lane = 0; i < count; ++lane, ++i)
+                out[i] = tmp[lane];
+        }
+        if (i < count) {
+            const __mmask8 mask_b = _mm512_cmp_epu64_mask(
+                next_x8_avx512(b0, b1, b2, b3), thresh_vec, _MM_CMPINT_LT);
+            _mm512_store_pd(tmp, _mm512_maskz_mov_pd(mask_b, one_d));
+            for (std::size_t lane = 0; i < count; ++lane, ++i)
+                out[i] = tmp[lane];
+        }
     }
 #else
     fill_xoshiro256pp_x8_bernoulli_fast(seed, p, out, count);

@@ -99,3 +99,29 @@ if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
     )
 endif()
+
+add_executable(
+    test_avx512_determinism
+    benchmarks/test_avx512_determinism.cpp
+    benchmarks/zorro_benchmark_kernels.cpp
+)
+
+target_include_directories(
+    test_avx512_determinism
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_options(
+    test_avx512_determinism
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O2;-Wall;-Wextra;-mavx512f;-mavx512vl;-mavx512dq>
+)
+
+target_link_libraries(
+    test_avx512_determinism
+    PRIVATE
+        m
+        mvec
+)
