@@ -1,6 +1,7 @@
 #include "benchmarks/zorro_benchmark_kernels.hpp"
 
 #include <cmath>
+#include <cpuid.h>
 #include <vector>
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -210,6 +211,17 @@ inline auto next_pp(std::uint64_t (&s)[4]) noexcept -> std::uint64_t {
 }
 
 #ifdef __AVX512F__
+
+// CPUID leaf 0: vendor string is in EBX-EDX-ECX (yes, that order).
+// "AuthenticAMD" → EBX=0x68747541 EDX=0x69746e65 ECX=0x444d4163
+inline auto cpu_is_amd() noexcept -> bool {
+    static const bool is_amd = [] {
+        unsigned eax, ebx, ecx, edx;
+        __cpuid(0, eax, ebx, ecx, edx);
+        return ebx == 0x68747541u && edx == 0x69746e65u && ecx == 0x444d4163u;
+    }();
+    return is_amd;
+}
 
 // ── AVX-512 helpers ──────────────────────────────────────────────────────────
 
@@ -1909,9 +1921,17 @@ void fill_xoshiro256pp_x16_uniform01_avx512(std::uint64_t seed, double* out,
 // Two 8-lane groups.  Rejection test returns an 8-bit predicate mask (__mmask8)
 // that drives _mm512_mask_compressstoreu_pd — no 128-bit extraction loop needed.
 // Accepted pairs are packed into a small buffer then written to output.
+//
+// AMD Zen 4 implements 512-bit sqrt/div/compress as pairs of 256-bit micro-ops
+// serialised on a single divider, making this kernel ~1.6× slower than the AVX2
+// vecpolar on AMD hardware.  Fall back to AVX2 when running on AMD.
 void fill_xoshiro256pp_x16_normal_vecpolar_avx512(std::uint64_t seed, double* out,
                                                    std::size_t count) noexcept {
 #ifdef __AVX512F__
+    if (cpu_is_amd()) {
+        fill_xoshiro256pp_x8_normal_vecpolar_avx2(seed, out, count);
+        return;
+    }
     alignas(64) std::uint64_t sa0[8], sa1[8], sa2[8], sa3[8];
     alignas(64) std::uint64_t sb0[8], sb1[8], sb2[8], sb3[8];
     seed_x16_avx512(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
