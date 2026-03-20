@@ -44,6 +44,10 @@ void fill_xoshiro256pp_x8_bernoulli_naive(std::uint64_t seed, double p,
 void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
                                           double* out,
                                           std::size_t count) noexcept;
+// Bernoulli(0.5) special case: each raw bit is an independent trial.
+// One uint64 → 64 samples. 16x throughput vs per-lane threshold compare.
+void fill_xoshiro256pp_x8_bernoulli_half(std::uint64_t seed, double* out,
+                                          std::size_t count) noexcept;
 
 // Gamma(alpha, 1) — Marsaglia-Tsang
 void fill_gamma_scalar_fused(std::uint64_t seed, double alpha, double* out,

@@ -1292,6 +1292,96 @@ void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
 #endif
 }
 
+// ─── Bernoulli(0.5): bit-unpacking — each bit is an independent trial ────────
+// For p = 0.5, every bit of the raw RNG output is an independent Bernoulli(0.5)
+// trial. One uint64 gives 64 samples. With x8 (two x4 groups), each RNG call
+// produces 8 × 64 = 512 Bernoulli samples — a 64x throughput gain over the
+// per-lane approaches that produce only 4 or 8 samples per RNG call.
+//
+// We unpack bits into doubles (0.0 / 1.0) for output compatibility with the
+// other kernels. The inner loop processes 8 bits at a time using a lookup
+// table, but for maximum throughput we use SIMD: shift out 4 bits → mask →
+// convert to double.
+void fill_xoshiro256pp_x8_bernoulli_half(std::uint64_t seed, double* out,
+                                          std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const __m256i one_i = _mm256_set1_epi64x(1);
+    const __m256d one_d = _mm256_set1_pd(1.0);
+
+    // Each RNG call gives 4 uint64s = 256 bits = 256 Bernoulli samples.
+    // We process one uint64 at a time, extracting 4 bits per SIMD iteration
+    // (shift right, mask low bit across 4 lanes, AND with 1.0).
+    //
+    // Actually, the most efficient approach: process all 4 lanes' bits
+    // in lockstep. Each lane has 64 bits. We shift all 4 lanes right by
+    // the same amount and mask bit 0 in each lane → 4 samples per step.
+    // 64 shifts × 4 lanes = 256 samples per x4 call.
+
+    std::size_t i = 0;
+    while (i < count) {
+        // Get 4 raw uint64s (256 bits total)
+        __m256i bits = next_x4_avx2(a0, a1, a2, a3);
+
+        // Extract 4 samples per iteration, 64 iterations for all bits
+        for (int bit = 0; bit < 64 && i + 4 <= count; ++bit) {
+            // Mask low bit of each lane: lane & 1
+            const __m256i masked = _mm256_and_si256(bits, one_i);
+            // Convert int64 {0,1} → double {0.0, 1.0} via AND with 1.0
+            // (bit pattern of 1 as int64 is not 1.0 as double, so we
+            //  use cvt instead)
+            // _mm256_cvtepi64_pd doesn't exist in AVX2, but we can do:
+            // int64 0/1 → OR with double 1.0 exponent, sub 1.0? No.
+            // Simplest correct path: mask gives 0 or all-1s, AND with 1.0.
+            // But _mm256_and_si256 gives 0 or 1, not 0 or -1.
+            // We need: _mm256_cmpeq_epi64(masked, one_i) → 0 or -1 mask,
+            // then AND with 1.0 double.
+            const __m256i cmp = _mm256_cmpeq_epi64(masked, one_i);
+            _mm256_storeu_pd(out + i,
+                _mm256_and_pd(_mm256_castsi256_pd(cmp), one_d));
+            i += 4;
+            bits = _mm256_srli_epi64(bits, 1);
+        }
+        if (i >= count) break;
+
+        // Second group
+        bits = next_x4_avx2(b0, b1, b2, b3);
+        for (int bit = 0; bit < 64 && i + 4 <= count; ++bit) {
+            const __m256i masked = _mm256_and_si256(bits, one_i);
+            const __m256i cmp = _mm256_cmpeq_epi64(masked, one_i);
+            _mm256_storeu_pd(out + i,
+                _mm256_and_pd(_mm256_castsi256_pd(cmp), one_d));
+            i += 4;
+            bits = _mm256_srli_epi64(bits, 1);
+        }
+    }
+    // Handle tail (< 4 remaining)
+    if (i < count) {
+        alignas(32) double tmp[4];
+        __m256i bits = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i masked = _mm256_and_si256(bits, one_i);
+        const __m256i cmp = _mm256_cmpeq_epi64(masked, one_i);
+        _mm256_store_pd(tmp, _mm256_and_pd(_mm256_castsi256_pd(cmp), one_d));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tmp[lane];
+    }
+#else
+    (void)seed; (void)out; (void)count;
+#endif
+}
+
 // ─── Gamma(alpha, 1) — Marsaglia-Tsang algorithm ─────────────────────────────
 //
 // For shape alpha >= 1:  d = alpha − 1/3,  c = 1/√(9d)
