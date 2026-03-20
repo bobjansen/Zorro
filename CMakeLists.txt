@@ -18,10 +18,31 @@ option(
     ${RNG_BENCH_HAS_MAVX2}
 )
 
+# The compiler may accept -mavx512f even when the host CPU lacks AVX-512.
+# Compile AND run a tiny AVX-512 program to detect actual hardware support.
+set(_rng_avx512_default OFF)
+if(RNG_BENCH_HAS_MAVX512F AND NOT CMAKE_CROSSCOMPILING)
+    include(CheckCXXSourceRuns)
+    set(CMAKE_REQUIRED_FLAGS "-mavx512f")
+    check_cxx_source_runs("
+#include <immintrin.h>
+int main() {
+    __m512i a = _mm512_set1_epi64(1);
+    __m512i b = _mm512_add_epi64(a, a);
+    (void)b;
+    return 0;
+}
+" RNG_BENCH_CPU_HAS_AVX512F)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(RNG_BENCH_CPU_HAS_AVX512F)
+        set(_rng_avx512_default ON)
+    endif()
+endif()
+
 option(
     RNG_BENCH_ENABLE_AVX512
     "Enable AVX-512F kernels (also enables VL for 256-bit rol, DQ for rotate)"
-    ${RNG_BENCH_HAS_MAVX512F}
+    ${_rng_avx512_default}
 )
 
 option(
@@ -108,28 +129,30 @@ if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)
     )
 endif()
 
-add_executable(
-    test_avx512_determinism
-    benchmarks/test_avx512_determinism.cpp
-    benchmarks/zorro_benchmark_kernels.cpp
-)
+if(RNG_BENCH_ENABLE_AVX512)
+    add_executable(
+        test_avx512_determinism
+        benchmarks/test_avx512_determinism.cpp
+        benchmarks/zorro_benchmark_kernels.cpp
+    )
 
-target_include_directories(
-    test_avx512_determinism
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
+    target_include_directories(
+        test_avx512_determinism
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
 
-target_compile_options(
-    test_avx512_determinism
-    PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-O2;-Wall;-Wextra;-mavx512f;-mavx512vl;-mavx512dq>
-)
+    target_compile_options(
+        test_avx512_determinism
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-O2;-Wall;-Wextra;-mavx512f;-mavx512vl;-mavx512dq>
+    )
 
-target_link_libraries(
-    test_avx512_determinism
-    PRIVATE
-        m
-        mvec
-)
+    target_link_libraries(
+        test_avx512_determinism
+        PRIVATE
+            m
+            mvec
+    )
+endif()
