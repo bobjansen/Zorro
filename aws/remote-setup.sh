@@ -69,12 +69,15 @@ for COMPILER in "$GCC" "$CLANG"; do
     for SIMD in "${SIMD_ORDER[@]}"; do
         FLAGS="${SIMD_LEVELS[$SIMD]}"
         DIR="build-${CTAG}-${SIMD}"
-        # stephanfr requires AVX2 — skip for no-avx2 and no-avx builds
+        # Disable features not available at this SIMD level
         STEPHANFR=ON
+        AVX512=ON
+        [[ "$SIMD" == "no-avx512" || "$SIMD" == "no-avx2" || "$SIMD" == "no-avx" ]] && AVX512=OFF
         [[ "$SIMD" == "no-avx2" || "$SIMD" == "no-avx" ]] && STEPHANFR=OFF
         cmake -S . -B "$DIR" \
             -DCMAKE_CXX_COMPILER="$COMPILER" \
             -DRNG_BENCH_ENABLE_NATIVE=ON \
+            -DRNG_BENCH_ENABLE_AVX512="$AVX512" \
             -DRNG_BENCH_ENABLE_STEPHANFR_AVX2="$STEPHANFR" \
             -DRNG_BENCH_MARCH_FLAGS="$FLAGS" \
             >&2
