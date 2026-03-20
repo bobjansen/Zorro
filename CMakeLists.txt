@@ -58,6 +58,14 @@ if(RNG_BENCH_ENABLE_NATIVE)
     )
 endif()
 
+# Optional SIMD override flags appended after -march=native so they win.
+# e.g. -DRNG_BENCH_MARCH_FLAGS="-mno-avx512f" or "-mno-avx2 -mno-avx512f"
+set(RNG_BENCH_MARCH_FLAGS "" CACHE STRING "Extra SIMD override flags (appended after -march=native)")
+if(RNG_BENCH_MARCH_FLAGS)
+    separate_arguments(_march_flags UNIX_COMMAND "${RNG_BENCH_MARCH_FLAGS}")
+    target_compile_options(benchmark_distributions PRIVATE ${_march_flags})
+endif()
+
 if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)
     target_sources(
         benchmark_distributions

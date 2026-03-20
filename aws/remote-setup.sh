@@ -51,20 +51,35 @@ else
     ITYPE=$(curl -sf http://169.254.169.254/latest/meta-data/instance-type 2>/dev/null) || ITYPE="unknown"
 fi
 
-# ── Build with both compilers ────────────────────────────────────────────────
+# ── Build with both compilers × SIMD levels ───────────────────────────────────
 
 cd ~/rng
 
+# name → RNG_BENCH_MARCH_FLAGS value  (empty = full native)
+declare -A SIMD_LEVELS=(
+    [native]=""
+    [no-avx512]="-mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512dq -mno-avx512cd -mno-avx512vnni"
+    [no-avx2]="-mno-avx2 -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512dq -mno-avx512cd -mno-avx512vnni"
+    [no-avx]="-mno-avx -mno-avx2 -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512dq -mno-avx512cd -mno-avx512vnni"
+)
+SIMD_ORDER=(native no-avx512 no-avx2 no-avx)
+
 for COMPILER in "$GCC" "$CLANG"; do
-    TAG="${COMPILER%%-*}"  # "g++" or "clang++"
-    DIR="build-$TAG"
-    mkdir -p "$DIR"
-    cmake -S . -B "$DIR" \
-        -DCMAKE_CXX_COMPILER="$COMPILER" \
-        -DRNG_BENCH_ENABLE_NATIVE=ON \
-        -DRNG_BENCH_ENABLE_STEPHANFR_AVX2=ON \
-        >&2
-    cmake --build "$DIR" -j"$(nproc)" >&2
+    CTAG="${COMPILER%%-*}"  # "g++" or "clang++"
+    for SIMD in "${SIMD_ORDER[@]}"; do
+        FLAGS="${SIMD_LEVELS[$SIMD]}"
+        DIR="build-${CTAG}-${SIMD}"
+        # stephanfr requires AVX2 — skip for no-avx2 and no-avx builds
+        STEPHANFR=ON
+        [[ "$SIMD" == "no-avx2" || "$SIMD" == "no-avx" ]] && STEPHANFR=OFF
+        cmake -S . -B "$DIR" \
+            -DCMAKE_CXX_COMPILER="$COMPILER" \
+            -DRNG_BENCH_ENABLE_NATIVE=ON \
+            -DRNG_BENCH_ENABLE_STEPHANFR_AVX2="$STEPHANFR" \
+            -DRNG_BENCH_MARCH_FLAGS="$FLAGS" \
+            >&2
+        cmake --build "$DIR" -j"$(nproc)" >&2
+    done
 done
 
 # ── Report ───────────────────────────────────────────────────────────────────
@@ -87,24 +102,16 @@ echo "GCC:   $($GCC --version | head -1)"
 echo "Clang: $($CLANG --version | head -1)"
 echo ""
 
-# ── AVX-512 rotate check (both compilers) ────────────────────────────────────
-
-for TAG in g++ clang++; do
-    BIN="build-$TAG/benchmark_distributions"
-    [[ -f "$BIN" ]] || continue
-    COUNT=$(objdump -d -M intel --no-show-raw-insn "$BIN" 2>/dev/null | grep -c 'vprol' || true)
-    echo "=== ROTATE CHECK ($TAG) ==="
-    echo "$COUNT vprolq instructions"
-    echo ""
-done
-
-# ── Benchmarks ────────────────────────────────────────────────────────────────
+# ── AVX-512 rotate check & benchmarks ────────────────────────────────────────
 
 for COMPILER in "$GCC" "$CLANG"; do
-    TAG="${COMPILER%%-*}"
-    BIN="build-$TAG/benchmark_distributions"
-    [[ -f "$BIN" ]] || continue
-    echo "=== BENCHMARK ($($COMPILER --version | head -1)) ==="
-    taskset -c 0 "./$BIN"
-    echo ""
+    CTAG="${COMPILER%%-*}"
+    for SIMD in "${SIMD_ORDER[@]}"; do
+        BIN="build-${CTAG}-${SIMD}/benchmark_distributions"
+        [[ -f "$BIN" ]] || continue
+        COUNT=$(objdump -d -M intel --no-show-raw-insn "$BIN" 2>/dev/null | grep -c 'vprol' || true)
+        echo "=== BENCHMARK ($($COMPILER --version | head -1)) SIMD=$SIMD vprolq=$COUNT ==="
+        taskset -c 0 "./$BIN"
+        echo ""
+    done
 done
