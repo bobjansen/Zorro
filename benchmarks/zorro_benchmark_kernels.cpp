@@ -1564,7 +1564,8 @@ void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
     alignas(32) std::uint64_t raw[4];
     std::size_t i = 0;
 
-    auto unpack_one_call = [&](__m256i& s0, __m256i& s1, __m256i& s2, __m256i& s3) {
+    auto unpack_one_call = [&](__m256i& s0, __m256i& s1, __m256i& s2, __m256i& s3)
+        __attribute__((always_inline)) {
         _mm256_store_si256(reinterpret_cast<__m256i*>(raw),
                            _mm256_srli_epi64(next_x4_avx2(s0, s1, s2, s3), kBernoulliSkipBits));
 
