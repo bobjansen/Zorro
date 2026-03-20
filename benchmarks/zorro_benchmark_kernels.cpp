@@ -1901,7 +1901,7 @@ void fill_xoshiro256pp_x16_uniform01_avx512(std::uint64_t seed, double* out,
         }
     }
 #else
-    fill_xoshiro256pp_x16_uniform01_avx512(seed, out, count);
+    fill_xoshiro256pp_x8_uniform01_avx2(seed, out, count);
 #endif
 }
 
