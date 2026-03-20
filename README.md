@@ -70,7 +70,7 @@ no-avx), and collects results. Results are saved under `aws/results/`.
 
 ## Findings
 
-Results from `aws/results/20260320-220832` (GCC 15, native SIMD, best ms).
+Results from `aws/bench.sh` (GCC 15, native SIMD, best ms).
 
 ### Uniform generation
 
