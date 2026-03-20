@@ -6,7 +6,6 @@
 #include <iomanip>
 #include <iostream>
 #include <numeric>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -22,7 +21,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using Milliseconds = std::chrono::duration<double, std::milli>;
 
-constexpr std::size_t kSampleCount = 1u << 24;
+constexpr std::size_t kSampleCount = 1u << 20;
 constexpr std::uint64_t kSeed = 0x123456789abcdef0ULL;
 constexpr int kWarmupIterations = 3;
 constexpr int kMeasureIterations = 21;
@@ -75,7 +74,7 @@ void fill_normal_local(zorro::Xoshiro256pp& rng, double* out,
             continue;
         const double scale = std::sqrt(-2.0 * std::log(s) / s);
         out[i++] = u1 * scale;
-        if (i < count)
+        if (i < count) [[likely]]
             out[i++] = u2 * scale;
     }
 }
@@ -94,7 +93,7 @@ void fill_normal_local(zorro::Xoshiro256pp_x2& rng, double* out,
                 continue;
             const double scale = std::sqrt(-2.0 * std::log(s) / s);
             out[i++] = u1 * scale;
-            if (i < count)
+            if (i < count) [[likely]]
                 out[i++] = u2 * scale;
         }
     }
@@ -118,7 +117,7 @@ void fill_normal_local(zorro::Xoshiro256pp_x4_portable& rng, double* out,
                 continue;
             const double scale = std::sqrt(-2.0 * std::log(s) / s);
             out[i++] = u1 * scale;
-            if (i < count)
+            if (i < count) [[likely]]
                 out[i++] = u2 * scale;
         }
     }
@@ -291,7 +290,7 @@ void fill_student_t_avx2_fast(double* out, std::size_t count) {
 #endif
 
 void print_header() {
-    std::cout << "Benchmark: 2^24 samples\n";
+    std::cout << "Benchmark: 2^20 samples\n";
     std::cout << "Samples:   " << kSampleCount << '\n';
     std::cout << "Seed:      0x" << std::hex << kSeed << std::dec << '\n';
     std::cout << "Warmups:   " << kWarmupIterations << '\n';
