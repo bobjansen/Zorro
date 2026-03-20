@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cpuid.h>
+#include <cstring>
 #include <vector>
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -1293,15 +1294,12 @@ void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
 }
 
 // ─── Bernoulli(0.5): bit-unpacking — each bit is an independent trial ────────
-// For p = 0.5, every bit of the raw RNG output is an independent Bernoulli(0.5)
-// trial. One uint64 gives 64 samples. With x8 (two x4 groups), each RNG call
-// produces 8 × 64 = 512 Bernoulli samples — a 64x throughput gain over the
-// per-lane approaches that produce only 4 or 8 samples per RNG call.
-//
-// We unpack bits into doubles (0.0 / 1.0) for output compatibility with the
-// other kernels. The inner loop processes 8 bits at a time using a lookup
-// table, but for maximum throughput we use SIMD: shift out 4 bits → mask →
-// convert to double.
+// We discard the low 12 bits of each uint64 (matching the uniform path's >> 12)
+// because xoshiro256++'s lowest bits have the weakest linear complexity.
+// That gives 52 usable bits per uint64, × 4 lanes = 208 samples per x4 call.
+static constexpr int kBernoulliSkipBits = 12;
+static constexpr int kBernoulliBitsPerLane = 64 - kBernoulliSkipBits;  // 52
+
 void fill_xoshiro256pp_x8_bernoulli_half(std::uint64_t seed, double* out,
                                           std::size_t count) noexcept {
 #ifdef __AVX2__
@@ -1321,34 +1319,14 @@ void fill_xoshiro256pp_x8_bernoulli_half(std::uint64_t seed, double* out,
     const __m256i one_i = _mm256_set1_epi64x(1);
     const __m256d one_d = _mm256_set1_pd(1.0);
 
-    // Each RNG call gives 4 uint64s = 256 bits = 256 Bernoulli samples.
-    // We process one uint64 at a time, extracting 4 bits per SIMD iteration
-    // (shift right, mask low bit across 4 lanes, AND with 1.0).
-    //
-    // Actually, the most efficient approach: process all 4 lanes' bits
-    // in lockstep. Each lane has 64 bits. We shift all 4 lanes right by
-    // the same amount and mask bit 0 in each lane → 4 samples per step.
-    // 64 shifts × 4 lanes = 256 samples per x4 call.
-
     std::size_t i = 0;
     while (i < count) {
-        // Get 4 raw uint64s (256 bits total)
-        __m256i bits = next_x4_avx2(a0, a1, a2, a3);
+        // Discard low 12 bits, then extract bits [12..63] (52 bits per lane)
+        __m256i bits = _mm256_srli_epi64(next_x4_avx2(a0, a1, a2, a3), kBernoulliSkipBits);
 
-        // Extract 4 samples per iteration, 64 iterations for all bits
-        for (int bit = 0; bit < 64 && i + 4 <= count; ++bit) {
-            // Mask low bit of each lane: lane & 1
-            const __m256i masked = _mm256_and_si256(bits, one_i);
-            // Convert int64 {0,1} → double {0.0, 1.0} via AND with 1.0
-            // (bit pattern of 1 as int64 is not 1.0 as double, so we
-            //  use cvt instead)
-            // _mm256_cvtepi64_pd doesn't exist in AVX2, but we can do:
-            // int64 0/1 → OR with double 1.0 exponent, sub 1.0? No.
-            // Simplest correct path: mask gives 0 or all-1s, AND with 1.0.
-            // But _mm256_and_si256 gives 0 or 1, not 0 or -1.
-            // We need: _mm256_cmpeq_epi64(masked, one_i) → 0 or -1 mask,
-            // then AND with 1.0 double.
-            const __m256i cmp = _mm256_cmpeq_epi64(masked, one_i);
+        for (int bit = 0; bit < kBernoulliBitsPerLane && i + 4 <= count; ++bit) {
+            const __m256i cmp = _mm256_cmpeq_epi64(
+                _mm256_and_si256(bits, one_i), one_i);
             _mm256_storeu_pd(out + i,
                 _mm256_and_pd(_mm256_castsi256_pd(cmp), one_d));
             i += 4;
@@ -1356,11 +1334,10 @@ void fill_xoshiro256pp_x8_bernoulli_half(std::uint64_t seed, double* out,
         }
         if (i >= count) break;
 
-        // Second group
-        bits = next_x4_avx2(b0, b1, b2, b3);
-        for (int bit = 0; bit < 64 && i + 4 <= count; ++bit) {
-            const __m256i masked = _mm256_and_si256(bits, one_i);
-            const __m256i cmp = _mm256_cmpeq_epi64(masked, one_i);
+        bits = _mm256_srli_epi64(next_x4_avx2(b0, b1, b2, b3), kBernoulliSkipBits);
+        for (int bit = 0; bit < kBernoulliBitsPerLane && i + 4 <= count; ++bit) {
+            const __m256i cmp = _mm256_cmpeq_epi64(
+                _mm256_and_si256(bits, one_i), one_i);
             _mm256_storeu_pd(out + i,
                 _mm256_and_pd(_mm256_castsi256_pd(cmp), one_d));
             i += 4;
@@ -1370,12 +1347,253 @@ void fill_xoshiro256pp_x8_bernoulli_half(std::uint64_t seed, double* out,
     // Handle tail (< 4 remaining)
     if (i < count) {
         alignas(32) double tmp[4];
-        __m256i bits = next_x4_avx2(a0, a1, a2, a3);
-        const __m256i masked = _mm256_and_si256(bits, one_i);
-        const __m256i cmp = _mm256_cmpeq_epi64(masked, one_i);
+        __m256i bits = _mm256_srli_epi64(next_x4_avx2(a0, a1, a2, a3), kBernoulliSkipBits);
+        const __m256i cmp = _mm256_cmpeq_epi64(
+            _mm256_and_si256(bits, one_i), one_i);
         _mm256_store_pd(tmp, _mm256_and_pd(_mm256_castsi256_pd(cmp), one_d));
         for (std::size_t lane = 0; i < count; ++lane, ++i)
             out[i] = tmp[lane];
+    }
+#else
+    (void)seed; (void)out; (void)count;
+#endif
+}
+
+// ─── Bernoulli → uint8_t output ──────────────────────────────────────────────
+
+// Naive: generate uniform doubles, compare, store 0/1 as uint8_t.
+void fill_xoshiro256pp_x8_bernoulli_u8_naive(std::uint64_t seed, double p,
+                                              std::uint8_t* out,
+                                              std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    alignas(32) double tmp[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    std::size_t i = 0;
+    while (i + 8 <= count) {
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        out[i + 0] = tmp[0] < p ? 1 : 0;
+        out[i + 1] = tmp[1] < p ? 1 : 0;
+        out[i + 2] = tmp[2] < p ? 1 : 0;
+        out[i + 3] = tmp[3] < p ? 1 : 0;
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3)));
+        out[i + 4] = tmp[0] < p ? 1 : 0;
+        out[i + 5] = tmp[1] < p ? 1 : 0;
+        out[i + 6] = tmp[2] < p ? 1 : 0;
+        out[i + 7] = tmp[3] < p ? 1 : 0;
+        i += 8;
+    }
+    while (i + 4 <= count) {
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        for (int lane = 0; lane < 4; ++lane)
+            out[i + lane] = tmp[lane] < p ? 1 : 0;
+        i += 4;
+    }
+    if (i < count) {
+        _mm256_store_pd(tmp, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = tmp[lane] < p ? 1 : 0;
+    }
+#else
+    (void)seed; (void)p; (void)out; (void)count;
+#endif
+}
+
+// Fast: integer threshold compare → pack 4 results into low bytes of __m256i,
+// then narrow to uint8_t via _mm256_packs_epi32 + _mm256_packs_epi16.
+void fill_xoshiro256pp_x8_bernoulli_u8_fast(std::uint64_t seed, double p,
+                                             std::uint8_t* out,
+                                             std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const auto threshold = static_cast<std::uint64_t>(p * 0x1.0p64);
+    const __m256i sign_flip = _mm256_set1_epi64x(
+        static_cast<std::int64_t>(0x8000000000000000ULL));
+    const __m256i thresh_vec = _mm256_set1_epi64x(
+        static_cast<std::int64_t>(threshold ^ 0x8000000000000000ULL));
+    const __m256i one_i64 = _mm256_set1_epi64x(1);
+
+    // cmpgt produces 0 or -1 (0xFFFF...) per 64-bit lane.
+    // We AND with 1 to get 0 or 1, then pack 4×i64 → movemask or narrow.
+    // 8 RNG calls → 32 results, packed into 32 bytes via shuffle.
+    std::size_t i = 0;
+    while (i + 32 <= count) {
+        // 8 x4 calls = 32 samples
+        __m256i r0 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(a0, a1, a2, a3), sign_flip)));
+        __m256i r1 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(b0, b1, b2, b3), sign_flip)));
+        __m256i r2 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(a0, a1, a2, a3), sign_flip)));
+        __m256i r3 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(b0, b1, b2, b3), sign_flip)));
+        __m256i r4 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(a0, a1, a2, a3), sign_flip)));
+        __m256i r5 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(b0, b1, b2, b3), sign_flip)));
+        __m256i r6 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(a0, a1, a2, a3), sign_flip)));
+        __m256i r7 = _mm256_and_si256(one_i64, _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(next_x4_avx2(b0, b1, b2, b3), sign_flip)));
+
+        // Pack 4×i64{0,1} → 4×i32 → 4×i16 → 4×i8
+        // _mm256_packs_epi32 works on 128-bit halves independently (lane-crossing).
+        // Simpler: use shuffle bytes to gather the low byte of each 64-bit element.
+        // Each 256-bit reg has 4 uint64 values (0 or 1). The '1' is in byte 0
+        // of each 8-byte group. We want bytes [0, 8, 16, 24] → 4 output bytes.
+        // Use _mm256_shuffle_epi8 to collect them, then extract.
+
+        // Shuffle mask: grab byte 0 of each 64-bit element within each 128-bit lane
+        // Lane0: bytes [0, 8] → positions [0, 1]  (within 128-bit half)
+        // Lane1: bytes [0, 8] → positions [0, 1]
+        // Then permute to combine.
+        // Easier approach: just use _mm256_extract_epi8 or store + memcpy.
+        // Actually, the fastest for 32 bytes: store all 8 regs via movemask trick.
+
+        // Extract low byte of each 64-bit element via shuffle.
+        const __m256i shuf = _mm256_set_epi8(
+            -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, 24,16,8,0,
+            -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, 24,16,8,0);
+        // This puts the 4 low bytes into positions [0..3] of each 128-bit lane.
+        __m256i s0 = _mm256_shuffle_epi8(r0, shuf);  // [B0,B1,B2,B3, 0..0 | B0,B1,B2,B3, 0..0]
+        __m256i s1 = _mm256_shuffle_epi8(r1, shuf);
+        __m256i s2 = _mm256_shuffle_epi8(r2, shuf);
+        __m256i s3 = _mm256_shuffle_epi8(r3, shuf);
+        __m256i s4 = _mm256_shuffle_epi8(r4, shuf);
+        __m256i s5 = _mm256_shuffle_epi8(r5, shuf);
+        __m256i s6 = _mm256_shuffle_epi8(r6, shuf);
+        __m256i s7 = _mm256_shuffle_epi8(r7, shuf);
+
+        // Each sx has 4 useful bytes in low 128-bit half, positions [0..3].
+        // Combine: s0[0..3] + s1[0..3] → 8 bytes, etc.
+        // Use unpacklo to interleave i32s, building up to 32 bytes.
+        // s0 low lane: [b0 b1 b2 b3 0 0 0 0 0 0 0 0 0 0 0 0]
+        // s1 low lane: [b4 b5 b6 b7 0 0 0 0 0 0 0 0 0 0 0 0]
+        // We want: [b0 b1 b2 b3 b4 b5 b6 b7 ...]
+
+        // Extract low 32-bits of each as scalar and build output.
+        // _mm256_extract_epi32(sx, 0) gives us the 4 packed bytes as one int32.
+        const auto w0 = static_cast<std::uint32_t>(_mm256_extract_epi32(s0, 0));
+        const auto w1 = static_cast<std::uint32_t>(_mm256_extract_epi32(s1, 0));
+        const auto w2 = static_cast<std::uint32_t>(_mm256_extract_epi32(s2, 0));
+        const auto w3 = static_cast<std::uint32_t>(_mm256_extract_epi32(s3, 0));
+        const auto w4 = static_cast<std::uint32_t>(_mm256_extract_epi32(s4, 0));
+        const auto w5 = static_cast<std::uint32_t>(_mm256_extract_epi32(s5, 0));
+        const auto w6 = static_cast<std::uint32_t>(_mm256_extract_epi32(s6, 0));
+        const auto w7 = static_cast<std::uint32_t>(_mm256_extract_epi32(s7, 0));
+
+        std::memcpy(out + i +  0, &w0, 4);
+        std::memcpy(out + i +  4, &w1, 4);
+        std::memcpy(out + i +  8, &w2, 4);
+        std::memcpy(out + i + 12, &w3, 4);
+        std::memcpy(out + i + 16, &w4, 4);
+        std::memcpy(out + i + 20, &w5, 4);
+        std::memcpy(out + i + 24, &w6, 4);
+        std::memcpy(out + i + 28, &w7, 4);
+        i += 32;
+    }
+    // Tail: scalar fallback
+    while (i + 4 <= count) {
+        const __m256i ra = next_x4_avx2(a0, a1, a2, a3);
+        const int bits = _mm256_movemask_pd(_mm256_castsi256_pd(
+            _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(ra, sign_flip))));
+        for (int lane = 0; lane < 4; ++lane)
+            out[i + lane] = (bits >> lane) & 1;
+        i += 4;
+    }
+    if (i < count) {
+        const __m256i ra = next_x4_avx2(a0, a1, a2, a3);
+        const int bits = _mm256_movemask_pd(_mm256_castsi256_pd(
+            _mm256_cmpgt_epi64(thresh_vec, _mm256_xor_si256(ra, sign_flip))));
+        for (std::size_t lane = 0; i < count; ++lane, ++i)
+            out[i] = (bits >> lane) & 1;
+    }
+#else
+    (void)seed; (void)p; (void)out; (void)count;
+#endif
+}
+
+// p=0.5 bit-unpack to uint8_t: each bit of raw uint64 → one byte (0 or 1).
+// Discards low 12 bits for quality (matching uniform path). 52 usable bits per
+// uint64, × 4 lanes = 208 samples per x4 call. Uses byte-broadcast + bit-mask
+// SIMD to unpack 8 bits → 8 bytes in one shot.
+void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
+                                             std::uint8_t* out,
+                                             std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    // Bit-select mask: isolate each of 8 bits within a broadcast byte.
+    const __m256i bit_mask = _mm256_set_epi8(
+        -128, 64, 32, 16, 8, 4, 2, 1,  -128, 64, 32, 16, 8, 4, 2, 1,
+        -128, 64, 32, 16, 8, 4, 2, 1,  -128, 64, 32, 16, 8, 4, 2, 1);
+    const __m256i one_byte = _mm256_set1_epi8(1);
+
+    // After >> 12, each uint64 has 52 usable bits in positions [0..51].
+    // That's bytes [0..5] fully usable (48 bits) + 4 bits in byte [6].
+    // We process 6 full bytes (48 samples) via SIMD, then 4 remaining bits scalar.
+    static constexpr int kFullBytes = kBernoulliBitsPerLane / 8;      // 6
+    static constexpr int kRemainBits = kBernoulliBitsPerLane % 8;     // 4
+
+    alignas(32) std::uint64_t raw[4];
+    std::size_t i = 0;
+
+    auto unpack_one_call = [&](__m256i& s0, __m256i& s1, __m256i& s2, __m256i& s3) {
+        _mm256_store_si256(reinterpret_cast<__m256i*>(raw),
+                           _mm256_srli_epi64(next_x4_avx2(s0, s1, s2, s3), kBernoulliSkipBits));
+
+        for (int lane = 0; lane < 4 && i < count; ++lane) {
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(&raw[lane]);
+            // SIMD path: 6 full bytes → 48 samples
+            for (int b = 0; b < kFullBytes && i + 8 <= count; ++b) {
+                const __m256i bcast = _mm256_set1_epi8(static_cast<char>(bytes[b]));
+                const __m256i isolated = _mm256_and_si256(bcast, bit_mask);
+                const __m256i nonzero = _mm256_min_epu8(isolated, one_byte);
+                _mm_storel_epi64(reinterpret_cast<__m128i*>(out + i),
+                    _mm256_castsi256_si128(nonzero));
+                i += 8;
+            }
+            // Remaining 4 bits from byte 6
+            if (kRemainBits > 0 && i < count) {
+                std::uint8_t tail_byte = bytes[kFullBytes];
+                for (int bit = 0; bit < kRemainBits && i < count; ++bit) {
+                    out[i++] = tail_byte & 1;
+                    tail_byte >>= 1;
+                }
+            }
+        }
+    };
+
+    while (i < count) {
+        unpack_one_call(a0, a1, a2, a3);
+        if (i >= count) break;
+        unpack_one_call(b0, b1, b2, b3);
     }
 #else
     (void)seed; (void)out; (void)count;

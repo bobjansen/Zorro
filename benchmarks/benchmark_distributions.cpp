@@ -269,6 +269,77 @@ void fill_bernoulli_x8_half_bits(double* out, std::size_t count) {
 }
 #endif
 
+// ── uint8_t Bernoulli benchmarks ─────────────────────────────────────────────
+
+auto checksum_buffer_u8(const std::vector<std::uint8_t>& samples) -> double {
+    std::uint64_t sum = 0;
+    for (auto v : samples) sum += v;
+    return static_cast<double>(sum);
+}
+
+template <typename FillFn>
+auto run_benchmark_u8(std::string name, FillFn&& fill) -> BenchmarkResult {
+    std::vector<std::uint8_t> samples(kSampleCount);
+
+    for (int i = 0; i < kWarmupIterations; ++i)
+        fill(samples.data(), samples.size());
+
+    std::vector<double> times_ms;
+    times_ms.reserve(kMeasureIterations);
+    double checksum = 0.0;
+
+    for (int i = 0; i < kMeasureIterations; ++i) {
+        const auto start = Clock::now();
+        fill(samples.data(), samples.size());
+        const auto stop = Clock::now();
+        times_ms.push_back(Milliseconds(stop - start).count());
+        checksum += checksum_buffer_u8(samples);
+    }
+
+    std::vector<double> sorted = times_ms;
+    std::sort(sorted.begin(), sorted.end());
+
+    const double best_ms = sorted.front();
+    const double median_ms = sorted[sorted.size() / 2];
+    const double mean_ms = std::accumulate(times_ms.begin(), times_ms.end(), 0.0) /
+                           static_cast<double>(times_ms.size());
+    const double samples_per_second =
+        static_cast<double>(kSampleCount) / (best_ms / 1000.0);
+
+    g_checksum_sink += checksum;
+
+    return BenchmarkResult{
+        .name = std::move(name),
+        .best_ms = best_ms,
+        .median_ms = median_ms,
+        .mean_ms = mean_ms,
+        .samples_per_second = samples_per_second,
+        .checksum = checksum,
+    };
+}
+
+#ifdef __AVX2__
+void fill_bernoulli_u8_naive(std::uint8_t* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_naive(kSeed, 0.3, out, count);
+}
+
+void fill_bernoulli_u8_fast(std::uint8_t* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_fast(kSeed, 0.3, out, count);
+}
+
+void fill_bernoulli_u8_half_naive(std::uint8_t* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_naive(kSeed, 0.5, out, count);
+}
+
+void fill_bernoulli_u8_half_fast(std::uint8_t* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_fast(kSeed, 0.5, out, count);
+}
+
+void fill_bernoulli_u8_half_bits(std::uint8_t* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_half(kSeed, out, count);
+}
+#endif
+
 // ── Gamma(2, 1) ──────────────────────────────────────────────────────────────
 void fill_gamma_scalar(double* out, std::size_t count) {
     zorro_bench::fill_gamma_scalar_fused(kSeed, 2.0, out, count);
@@ -514,6 +585,29 @@ int main() {
     print_results("Exponential(1)", exponential_results);
     print_results("Bernoulli(0.3)", bernoulli_results);
     print_results("Bernoulli(0.5)", bernoulli_half_results);
+
+    std::vector<BenchmarkResult> bernoulli_u8_results;
+    bernoulli_u8_results.reserve(4);
+#ifdef __AVX2__
+    bernoulli_u8_results.push_back(run_benchmark_u8("x8 u8 naive (uniform + cmp)",
+                                                     fill_bernoulli_u8_naive));
+    bernoulli_u8_results.push_back(run_benchmark_u8("x8 u8 fast (int threshold)",
+                                                     fill_bernoulli_u8_fast));
+#endif
+
+    std::vector<BenchmarkResult> bernoulli_u8_half_results;
+    bernoulli_u8_half_results.reserve(4);
+#ifdef __AVX2__
+    bernoulli_u8_half_results.push_back(run_benchmark_u8("x8 u8 naive (uniform + cmp)",
+                                                          fill_bernoulli_u8_half_naive));
+    bernoulli_u8_half_results.push_back(run_benchmark_u8("x8 u8 fast (int threshold)",
+                                                          fill_bernoulli_u8_half_fast));
+    bernoulli_u8_half_results.push_back(run_benchmark_u8("x8 u8 bit-unpack",
+                                                          fill_bernoulli_u8_half_bits));
+#endif
+
+    print_results("Bernoulli(0.3) → uint8_t", bernoulli_u8_results);
+    print_results("Bernoulli(0.5) → uint8_t", bernoulli_u8_half_results);
     print_results("Gamma(2, 1)", gamma_results);
     print_results("Student's t(5)", student_t_results);
     std::cout << "checksum sink: " << std::setprecision(17) << g_checksum_sink

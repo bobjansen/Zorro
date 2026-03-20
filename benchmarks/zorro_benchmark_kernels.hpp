@@ -49,6 +49,19 @@ void fill_xoshiro256pp_x8_bernoulli_fast(std::uint64_t seed, double p,
 void fill_xoshiro256pp_x8_bernoulli_half(std::uint64_t seed, double* out,
                                           std::size_t count) noexcept;
 
+// ── Bernoulli → uint8_t output (0/1 per byte) ──────────────────────────────
+// 8x less memory traffic than double output.
+void fill_xoshiro256pp_x8_bernoulli_u8_naive(std::uint64_t seed, double p,
+                                              std::uint8_t* out,
+                                              std::size_t count) noexcept;
+void fill_xoshiro256pp_x8_bernoulli_u8_fast(std::uint64_t seed, double p,
+                                             std::uint8_t* out,
+                                             std::size_t count) noexcept;
+// p=0.5 bit-unpack to uint8_t: unpack each bit of raw uint64 into a byte.
+void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
+                                             std::uint8_t* out,
+                                             std::size_t count) noexcept;
+
 // Gamma(alpha, 1) — Marsaglia-Tsang
 void fill_gamma_scalar_fused(std::uint64_t seed, double alpha, double* out,
                               std::size_t count) noexcept;
