@@ -10,12 +10,13 @@ The core public API lives in `include/zorro/zorro.hpp` under the `zorro`
 namespace. The root-level `zorro.hpp` and `rng.hpp` headers are compatibility
 shims during the cleanup.
 
-The benchmark target compares `2^20` samples across six distribution suites:
+The benchmark target compares `2^20` samples across eight distribution suites:
 
 - **Uniform(0, 1)** — scalar, x2, x4 portable, x4/x8 AVX2, x8/x16 AVX-512
 - **Normal(0, 1)** — polar, batched, veclog, vecpolar (AVX2 and AVX-512)
 - **Exponential(1)** — scalar log, veclog AVX2, veclog AVX-512
 - **Bernoulli(0.3)** — naive, integer-threshold AVX2, native ucmp AVX-512
+- **Bernoulli(0.3/0.5) → uint8_t** — compact 1-byte output with bit-unpack special case for p=0.5
 - **Gamma(2, 1)** — scalar fused, x8 AVX2 fused/decoupled/full
 - **Student's t(5)** — scalar fused, x8 AVX2 fused/decoupled/fast
 
@@ -109,6 +110,32 @@ datapath, making the AVX-512 version ~1.6× *slower* than AVX2 on AMD hardware.
 AVX-512 exponential benefits strongly from the 8-wide `_ZGVeN8v_log` (+32-71%
 over AVX2). AVX-512 Bernoulli uses native `_mm512_cmp_epu64_mask` to eliminate
 the sign-flip workaround required by AVX2's signed-only `_mm256_cmpgt_epi64`.
+
+### Bernoulli output formats and the p=0.5 special case
+
+The Bernoulli kernels support two output formats:
+
+- **double** (8 bytes/sample) — 0.0 or 1.0, compatible with the other distribution suites.
+- **uint8_t** (1 byte/sample) — 0 or 1, 8x less memory traffic.
+
+For **p = 0.5**, every bit of the raw xoshiro256++ output is an independent
+Bernoulli trial. Instead of generating a uniform double and comparing, we
+unpack individual bits directly into the output — one RNG call produces
+208 samples (52 quality bits × 4 SIMD lanes) instead of 4.
+
+The low 12 bits of each uint64 are discarded, matching the uniform path's
+`>> 12` and avoiding the weakest bits of the xoshiro256++ output function.
+
+Local AVX2 results (2^20 samples, best of 21 runs):
+
+| Kernel | Output | Best ms | Throughput |
+|---|---|---|---|
+| naive (uniform + cmp) | double | 0.349 | 3.0 G/s |
+| fast (int threshold) | double | 0.312 | 3.4 G/s |
+| **bit-unpack (p=0.5)** | **double** | **0.176** | **6.0 G/s** |
+| naive (uniform + cmp) | uint8_t | 0.550 | 1.9 G/s |
+| fast (int threshold) | uint8_t | 0.336 | 3.1 G/s |
+| **bit-unpack (p=0.5)** | **uint8_t** | **0.050** | **21.2 G/s** |
 
 ### Fused vs decoupled generation
 
