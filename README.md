@@ -1,6 +1,8 @@
 # zorro
 
-Zorro is a standalone `xoshiro256++` experiment: scalar, 2-lane, 4-lane, and wider SIMD-oriented layouts plus a benchmark harness for uniform and normal generation.
+Zorro is a standalone `xoshiro256++` experiment: scalar, 2-lane, 4-lane, and
+wider SIMD-oriented layouts (AVX2 and AVX-512) plus a benchmark harness for
+multiple distributions.
 
 The benchmark target is configured for C++23.
 
@@ -8,15 +10,20 @@ The core public API lives in `include/zorro/zorro.hpp` under the `zorro`
 namespace. The root-level `zorro.hpp` and `rng.hpp` headers are compatibility
 shims during the cleanup.
 
-The benchmark target compares `2^24` samples for both `uniform(0, 1)` and standard-normal (`N(0, 1)`) generation across:
+The benchmark target compares `2^20` samples across six distribution suites:
 
-- `std::mt19937`
-- scalar `xoshiro256++`
-- 2-lane portable `xoshiro256++`
-- 4-lane portable `xoshiro256++`
-- Stephan Friedl's handwritten AVX2 `Xoshiro256PlusSIMD` implementation
+- **Uniform(0, 1)** — scalar, x2, x4 portable, x4/x8 AVX2, x8/x16 AVX-512
+- **Normal(0, 1)** — polar, batched, veclog, vecpolar (AVX2 and AVX-512)
+- **Exponential(1)** — scalar log, veclog AVX2, veclog AVX-512
+- **Bernoulli(0.3)** — naive, integer-threshold AVX2, native ucmp AVX-512
+- **Gamma(2, 1)** — scalar fused, x8 AVX2 fused/decoupled/full
+- **Student's t(5)** — scalar fused, x8 AVX2 fused/decoupled/fast
 
-Recent AWS runs under `aws/results/20260312-085709` show that the most interesting normal-path variants are the vectorized transforms (`veclog` and especially `vecpolar`), not the earlier extract/batched-only variants.
+Each suite also includes Stephan Friedl's handwritten AVX2 `Xoshiro256PlusSIMD`
+variants where applicable.
+
+A literate programming walkthrough of the core AVX2 4×2 loop lives in
+[docs/xoshiro256pp_avx_4x2.md](docs/xoshiro256pp_avx_4x2.md).
 
 ## Build
 
@@ -32,11 +39,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRNG_BENCH_ENABLE_NATIVE=ON
 cmake --build build -j
 ```
 
-If you need to disable the handwritten AVX2 comparison:
+CMake options:
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRNG_BENCH_ENABLE_STEPHANFR_AVX2=OFF
-```
+| Option | Default | Description |
+|---|---|---|
+| `RNG_BENCH_ENABLE_NATIVE` | `OFF` | Compile with `-march=native -mtune=native` |
+| `RNG_BENCH_ENABLE_AVX512` | auto-detected | AVX-512F/VL/DQ kernels. Auto-enabled when the host CPU supports AVX-512 (compile-and-run test), disabled otherwise. |
+| `RNG_BENCH_ENABLE_STEPHANFR_AVX2` | auto-detected | Stephan Friedl's AVX2 comparison. Auto-enabled when the compiler supports `-mavx2`. |
+| `RNG_BENCH_MARCH_FLAGS` | `""` | Extra SIMD override flags appended after `-march=native` (e.g. `-mno-avx512f`). |
 
 ## Run
 
@@ -44,66 +54,112 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRNG_BENCH_ENABLE_STEPHANFR_AVX2
 ./build/benchmark_distributions
 ```
 
-The benchmark uses a fixed seed and reports the best, median, and mean wall-clock time plus derived throughput in samples/second.
+The benchmark uses a fixed seed and reports the best, median, and mean
+wall-clock time plus derived throughput in samples/second.
 
-For the Zorro benchmarks, the driver uses local engine instances rather than the thread-local helper API so the measurements focus on generator and distribution throughput.
+### AWS benchmarking
+
+`aws/bench.sh` launches spot instances, uploads the source, builds with
+both GCC and Clang across multiple SIMD levels (native, no-avx512, no-avx2,
+no-avx), and collects results. Results are saved under `aws/results/`.
+
+```bash
+./aws/bench.sh                                    # defaults: c6i, c7i, c7a
+./aws/bench.sh --instances c7i.xlarge,c7a.xlarge  # custom instance types
+```
 
 ## Findings
 
+Results from `aws/results/20260320-220832` (GCC 15, native SIMD, best ms).
+
+### Uniform generation
+
+| Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
+|---|---|---|---|
+| scalar | 1.073 / 977 M/s | 1.262 / 831 M/s | 1.492 / 703 M/s |
+| x8 AVX2 (2×4) | 0.268 / 3916 M/s | 0.362 / 2895 M/s | 0.348 / 3015 M/s |
+| x16 AVX-512 (2×8) | 0.273 / 3840 M/s | 0.318 / 3299 M/s | 0.321 / 3263 M/s |
+
+AVX-512 uniform is a modest win on Intel (~8-14% over AVX2) but roughly breaks
+even on AMD, where integer/bitwise 512-bit ops split into 256-bit micro-op
+pairs at full throughput.
+
 ### Normal generation
 
-vecpolar (x8 AVX2 dual-stream + blended `_ZGVdN4v_log`) is the fastest N(0,1)
-path at ~292 M/s (Zorro) and ~303 M/s (stephanfr). The earlier extract and
-batched variants top out around 162 M/s. The veclog batch variant sits in
-between at ~263 M/s. The vectorized transform — not the wider PRNG — is the
-dominant factor.
+| Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
+|---|---|---|---|
+| x8 AVX2 + vecpolar | 3.046 / 344 M/s | 3.022 / 347 M/s | 3.627 / 289 M/s |
+| x16 AVX-512 + vecpolar | 3.052 / 344 M/s | 2.158 / 486 M/s | 2.643 / 397 M/s |
+
+AVX-512 vecpolar gives a 1.3-1.4× speedup on Intel thanks to native 512-bit
+sqrt/div and hardware compress-store. On AMD Zen 4, the kernel automatically
+falls back to AVX2 vecpolar at runtime (CPUID vendor check) because 512-bit
+sqrt, div, and `_mm512_mask_compressstoreu_pd` serialize on the 256-bit
+datapath, making the AVX-512 version ~1.6× *slower* than AVX2 on AMD hardware.
+
+### Exponential and Bernoulli
+
+| Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
+|---|---|---|---|
+| Exp x8 AVX2 veclog | 1.743 / 602 M/s | 2.123 / 494 M/s | 2.355 / 445 M/s |
+| Exp x16 AVX-512 veclog | 1.322 / 793 M/s | 1.370 / 766 M/s | 1.374 / 763 M/s |
+| Bernoulli x8 AVX2 fast | 0.269 / 3893 M/s | 0.357 / 2934 M/s | 0.360 / 2912 M/s |
+| Bernoulli x16 AVX-512 ucmp | 0.247 / 4247 M/s | 0.325 / 3229 M/s | 0.363 / 2890 M/s |
+
+AVX-512 exponential benefits strongly from the 8-wide `_ZGVeN8v_log` (+32-71%
+over AVX2). AVX-512 Bernoulli uses native `_mm512_cmp_epu64_mask` to eliminate
+the sign-flip workaround required by AVX2's signed-only `_mm256_cmpgt_epi64`.
 
 ### Fused vs decoupled generation
 
-The thesis "tight integration of raw bit generation with the follow-up
-distribution algorithm is an advantage" holds, but conditionally:
-
 **Gamma(2, 1) — fused wins decisively**
 
-| Kernel | M/s |
-|---|---|
-| scalar fused | 47 |
-| x8 AVX2 fused | 117 |
-| x8+x4 AVX2 full (vectorized MT) | 116 |
-| x8 AVX2 decoupled | 45 |
+| Kernel | c7a (Zen 4) | c7i (SPR) |
+|---|---|---|
+| scalar fused | 48 M/s | 47 M/s |
+| x8 AVX2 fused | 125 M/s | 127 M/s |
+| x8+x4 AVX2 full (vectorized MT) | 133 M/s | 126 M/s |
+| x8 AVX2 decoupled | 60 M/s | 66 M/s |
 
 Fused keeps the PRNG state registers hot and feeds the Marsaglia-Tsang
 acceptance loop directly from a 64-sample L1-resident buffer. Decoupled
-materialises ~320 MB of intermediate normals and uniforms to the heap, paying
-full memory bandwidth for no gain. A fully vectorised MT acceptance loop
-(4-wide AVX2 uniforms + unconditional `veclog` pair) does not improve on fused:
-the fast-accept path fires ~80 % of the time, the scalar loop was never the
-bottleneck, and the unconditional `veclog` overhead on the slow path absorbs
-any benefit from eliminating serial dependency chains.
+materialises intermediate normals and uniforms to the heap, paying full memory
+bandwidth for no gain.
 
 **Student's t(5) — decoupled wins**
 
-| Kernel | M/s |
-|---|---|
-| scalar fused | 27 |
-| x8 AVX2 fused | 35 |
-| x8 AVX2 decoupled (vecpolar Z + gamma_fused V) | 39 |
-| x8+x4 AVX2 fast (vecpolar Z + gamma_full V) | 39 |
+| Kernel | c7a (Zen 4) | c7i (SPR) |
+|---|---|---|
+| scalar fused | 26 M/s | 29 M/s |
+| x8 AVX2 fused | 35 M/s | 38 M/s |
+| x8 AVX2 decoupled | 62 M/s | 61 M/s |
+| x8+x4 AVX2 fast | 64 M/s | 62 M/s |
 
 For a compound distribution the fused variant forces a scalar Gamma loop into
-the hot path immediately after the AVX2 normal generation. Decoupled lets each
-sub-distribution run its own best kernel independently; the memory-traffic cost
-(two heap-write + two heap-read passes) is more than recovered. The choice of
-Gamma kernel (fused vs full) makes no difference at this level — both hit the
-same throughput ceiling set by the two-pass memory traffic.
+the hot path. Decoupled lets each sub-distribution run its own best kernel
+independently; the memory-traffic cost is more than recovered.
 
 **Summary**
 
 - Fused integration is the right default when the distribution is
-  self-contained and fits in L1 (Gamma: 2.5× over decoupled).
+  self-contained and fits in L1 (Gamma: 2× over decoupled).
 - Decoupled is better for compound distributions where one sub-computation
-  would otherwise serialize an otherwise-vectorised pipeline (Student-t: 1.1×
-  over fused, with headroom limited by memory bandwidth rather than compute).
+  would otherwise serialize an otherwise-vectorised pipeline (Student-t: 1.7×
+  over fused).
+- AVX-512 is not extended to Gamma or Student-t: their bottleneck is the
+  scalar Marsaglia-Tsang acceptance loop, not the PRNG or vectorized math.
+
+### AMD vs Intel: when AVX-512 helps and when it hurts
+
+AMD Zen 4 implements AVX-512 by splitting every 512-bit op into two 256-bit
+micro-ops. This is transparent for integer-heavy kernels (uniform, Bernoulli)
+where both halves pipeline through the ALUs at full throughput. But for
+FP-math-heavy kernels with sqrt, div, and compress-store (vecpolar), the two
+halves serialize on the single divider unit, making 512-bit strictly worse
+than 256-bit.
+
+The `cpu_is_amd()` check in the vecpolar kernel detects this at runtime and
+routes AMD hardware to the AVX2 path automatically.
 
 ## Third-party code
 

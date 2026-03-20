@@ -489,5 +489,52 @@ This is the core benefit of the 4×2 decomposition over a 1×8 approach.
 
 ---
 
+## 9. Extension to AVX-512: The 8×2 Pattern
+
+The 4×2 decomposition generalises directly to AVX-512 as an 8×2 pattern:
+each group holds 8 lanes in a single `__m512i` register rather than 4 in
+`__m256i`. The arithmetic is identical — add, rotate, XOR, shift — but two
+operations benefit from wider hardware:
+
+- **Native 64-bit rotate.** AVX2 emulates `rotl(x, 23)` with a
+  shift-pair-or sequence (3 instructions). AVX-512 provides `_mm512_rol_epi64`
+  as a single instruction.
+- **Wider stores.** Each `_mm512_storeu_pd` writes 8 doubles at once,
+  doubling the per-iteration output to 16 samples.
+
+The seeding and remainder logic stay the same — `seed_lanes` already accepts
+an arbitrary lane count, and the tail loop falls back to 8-wide steps then
+scalar extraction.
+
+### 9.1 When AVX-512 hurts: AMD Zen 4
+
+AMD Zen 4 implements AVX-512 by splitting every 512-bit operation into two
+256-bit micro-ops. For integer/bitwise kernels (uniform, Bernoulli) the two
+halves pipeline through the ALUs at full throughput, so the 8×2 pattern
+breaks even with the AVX2 4×2 pattern. But for FP-math-heavy kernels that
+use `_mm512_sqrt_pd`, `_mm512_div_pd`, or `_mm512_mask_compressstoreu_pd`
+(the vecpolar normal kernel), the two halves serialize on the single divider
+unit, making 512-bit strictly slower than 256-bit.
+
+The AVX-512 vecpolar kernel detects AMD hardware at runtime via CPUID leaf 0
+and falls back to the AVX2 vecpolar path automatically:
+
+```cpp
+inline auto cpu_is_amd() noexcept -> bool {
+    static const bool is_amd = [] {
+        unsigned eax, ebx, ecx, edx;
+        __cpuid(0, eax, ebx, ecx, edx);
+        // "AuthenticAMD" in EBX-EDX-ECX order
+        return ebx == 0x68747541u && edx == 0x69746e65u && ecx == 0x444d4163u;
+    }();
+    return is_amd;
+}
+```
+
+This keeps the benchmark harness portable across Intel and AMD without
+requiring separate build targets.
+
+---
+
 *All code fragments are extracted verbatim from
 `benchmarks/zorro_benchmark_kernels.cpp` in the Zorro repository.*
