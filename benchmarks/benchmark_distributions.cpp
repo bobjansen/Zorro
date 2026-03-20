@@ -289,6 +289,28 @@ void fill_student_t_avx2_fast(double* out, std::size_t count) {
 }
 #endif
 
+#ifdef __AVX512F__
+void fill_uniform_xoshiro_x8_avx512(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_uniform01_avx512(kSeed, out, count);
+}
+
+void fill_uniform_xoshiro_x16_avx512(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x16_uniform01_avx512(kSeed, out, count);
+}
+
+void fill_normals_xoshiro_x16_avx512_vecpolar(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x16_normal_vecpolar_avx512(kSeed, out, count);
+}
+
+void fill_exponential_x16_avx512(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x16_exponential_avx512(kSeed, out, count);
+}
+
+void fill_bernoulli_x16_avx512(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x16_bernoulli_avx512(kSeed, 0.3, out, count);
+}
+#endif
+
 void print_header() {
     std::cout << "Benchmark: 2^20 samples\n";
     std::cout << "Samples:   " << kSampleCount << '\n';
@@ -362,6 +384,12 @@ int main() {
     uniform_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 (2×4)",
                                             fill_uniform_xoshiro_x8_avx2));
 #endif
+#ifdef __AVX512F__
+    uniform_results.push_back(run_benchmark("xoshiro256++ x8 AVX-512 (1×8)",
+                                            fill_uniform_xoshiro_x8_avx512));
+    uniform_results.push_back(run_benchmark("xoshiro256++ x16 AVX-512 (2×8)",
+                                            fill_uniform_xoshiro_x16_avx512));
+#endif
     uniform_results.push_back(run_benchmark("xoshiro256++ x4 fused portable",
                                             fill_uniform_xoshiro_x4_fused));
 
@@ -394,6 +422,10 @@ int main() {
     normal_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 + vecpolar",
                                            fill_normals_xoshiro_x8_avx2_vecpolar));
 #endif
+#ifdef __AVX512F__
+    normal_results.push_back(run_benchmark("xoshiro256++ x16 AVX-512 + vecpolar",
+                                           fill_normals_xoshiro_x16_avx512_vecpolar));
+#endif
 
 #ifdef RNG_BENCH_ENABLE_STEPHANFR_AVX2
     normal_results.push_back(
@@ -418,6 +450,10 @@ int main() {
     exponential_results.push_back(run_benchmark("x8 AVX2 + veclog -log(u)",
                                                 fill_exponential_x8_veclog));
 #endif
+#ifdef __AVX512F__
+    exponential_results.push_back(run_benchmark("x16 AVX-512 + veclog -log(u)",
+                                                fill_exponential_x16_avx512));
+#endif
 
     std::vector<BenchmarkResult> bernoulli_results;
     bernoulli_results.reserve(4);
@@ -426,6 +462,10 @@ int main() {
                                               fill_bernoulli_x8_naive));
     bernoulli_results.push_back(run_benchmark("x8 AVX2 fast (int threshold)",
                                               fill_bernoulli_x8_fast));
+#endif
+#ifdef __AVX512F__
+    bernoulli_results.push_back(run_benchmark("x16 AVX-512 (native ucmp)",
+                                              fill_bernoulli_x16_avx512));
 #endif
 
     std::vector<BenchmarkResult> gamma_results;

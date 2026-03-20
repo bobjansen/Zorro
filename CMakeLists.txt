@@ -10,11 +10,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CheckCXXCompilerFlag)
 
 check_cxx_compiler_flag("-mavx2" RNG_BENCH_HAS_MAVX2)
+check_cxx_compiler_flag("-mavx512f" RNG_BENCH_HAS_MAVX512F)
 
 option(
     RNG_BENCH_ENABLE_STEPHANFR_AVX2
     "Benchmark the handwritten AVX2 Xoshiro256Plus implementation"
     ${RNG_BENCH_HAS_MAVX2}
+)
+
+option(
+    RNG_BENCH_ENABLE_AVX512
+    "Enable AVX-512F kernels (also enables VL for 256-bit rol, DQ for rotate)"
+    ${RNG_BENCH_HAS_MAVX512F}
 )
 
 option(
@@ -49,6 +56,14 @@ target_link_libraries(
         m
         mvec
 )
+
+if(RNG_BENCH_ENABLE_AVX512)
+    target_compile_options(
+        benchmark_distributions
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+endif()
 
 if(RNG_BENCH_ENABLE_NATIVE)
     target_compile_options(
@@ -92,3 +107,29 @@ if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
     )
 endif()
+
+add_executable(
+    test_avx512_determinism
+    benchmarks/test_avx512_determinism.cpp
+    benchmarks/zorro_benchmark_kernels.cpp
+)
+
+target_include_directories(
+    test_avx512_determinism
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_compile_options(
+    test_avx512_determinism
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O2;-Wall;-Wextra;-mavx512f;-mavx512vl;-mavx512dq>
+)
+
+target_link_libraries(
+    test_avx512_determinism
+    PRIVATE
+        m
+        mvec
+)

@@ -65,4 +65,17 @@ void fill_student_t_x8_avx2_decoupled(std::uint64_t seed, double nu, double* out
 void fill_student_t_x8_avx2_fast(std::uint64_t seed, double nu, double* out,
                                   std::size_t count) noexcept;
 
+// AVX-512 kernels
+void fill_xoshiro256pp_x8_uniform01_avx512(std::uint64_t seed, double* out,
+                                            std::size_t count) noexcept;
+void fill_xoshiro256pp_x16_uniform01_avx512(std::uint64_t seed, double* out,
+                                             std::size_t count) noexcept;
+void fill_xoshiro256pp_x16_normal_vecpolar_avx512(std::uint64_t seed, double* out,
+                                                   std::size_t count) noexcept;
+void fill_xoshiro256pp_x16_exponential_avx512(std::uint64_t seed, double* out,
+                                               std::size_t count) noexcept;
+void fill_xoshiro256pp_x16_bernoulli_avx512(std::uint64_t seed, double p,
+                                             double* out,
+                                             std::size_t count) noexcept;
+
 }  // namespace zorro_bench
