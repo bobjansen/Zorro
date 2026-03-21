@@ -77,6 +77,11 @@ add_executable(
 )
 
 add_executable(
+    importance_sampling
+    examples/importance_sampling.cpp
+)
+
+add_executable(
     quality_tests
     benchmarks/quality_tests.cpp
 )
@@ -102,6 +107,13 @@ target_include_directories(
 
 target_include_directories(
     high_dimensional_random_variables
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_include_directories(
+    importance_sampling
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -143,6 +155,12 @@ target_compile_options(
 )
 
 target_compile_options(
+    importance_sampling
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+)
+
+target_compile_options(
     quality_tests
     PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
@@ -172,6 +190,13 @@ target_link_libraries(
 
 target_link_libraries(
     high_dimensional_random_variables
+    PRIVATE
+        m
+        mvec
+)
+
+target_link_libraries(
+    importance_sampling
     PRIVATE
         m
         mvec
@@ -217,6 +242,12 @@ if(RNG_BENCH_ENABLE_AVX512)
     )
 
     target_compile_options(
+        importance_sampling
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+
+    target_compile_options(
         quality_tests
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
@@ -251,6 +282,12 @@ if(RNG_BENCH_ENABLE_NATIVE)
     )
 
     target_compile_options(
+        importance_sampling
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+    )
+
+    target_compile_options(
         quality_tests
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
@@ -278,6 +315,7 @@ if(RNG_BENCH_MARCH_FLAGS)
     separate_arguments(_march_flags UNIX_COMMAND "${RNG_BENCH_MARCH_FLAGS}")
     target_compile_options(benchmark_distributions PRIVATE ${_march_flags})
     target_compile_options(high_dimensional_random_variables PRIVATE ${_march_flags})
+    target_compile_options(importance_sampling PRIVATE ${_march_flags})
     target_compile_options(quality_tests PRIVATE ${_march_flags})
     target_compile_options(dieharder_stream PRIVATE ${_march_flags})
     if(RNG_BENCH_HAS_TESTU01)

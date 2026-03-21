@@ -46,6 +46,25 @@ Useful options:
 - `--paths N` and `--repetitions N` to make the run shorter or longer.
 - `--factors N` and `--degrees-of-freedom X` to change the factor model.
 
+### Importance sampling example
+
+There is also a rare-event example for importance sampling. It estimates a
+portfolio tail probability under a correlated Gaussian factor model using both
+plain Monte Carlo and a mean-shift importance proposal, again with a swappable
+`std`/`zorro` backend.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j --target importance_sampling
+./build/importance_sampling --backend both
+```
+
+Useful options:
+
+- `--rare-z X` sets the loss threshold in standard deviations above the mean.
+- `--dimension N`, `--factors N`, `--paths N`, and `--repetitions N` scale the workload.
+- `--backend std|zorro|both` switches the RNG implementation at runtime.
+
 ### SIMD dispatch
 
 The SIMD tier is selected at compile time based on which instruction sets are
