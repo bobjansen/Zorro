@@ -1,11 +1,11 @@
-\name{zorro_normal}
-\alias{zorro_normal}
+\name{draw_normal}
+\alias{draw_normal}
 \title{Generate Normal Random Numbers}
 \usage{
-zorro_normal(rng, n, mean = 0, sd = 1)
+draw_normal(rng, n, mean = 0, sd = 1)
 }
 \arguments{
-\item{rng}{External pointer from \code{zorro_create}.}
+\item{rng}{External pointer from \code{create_zorro_rng}.}
 \item{n}{Number of values to generate.}
 \item{mean}{Mean of the distribution (default 0).}
 \item{sd}{Standard deviation (default 1).}
@@ -18,7 +18,7 @@ Generate normal random numbers using the Marsaglia polar method with
 SIMD-accelerated xoshiro256++ engine.
 }
 \examples{
-rng <- zorro_create(42)
-x <- zorro_normal(rng, 1000)
+rng <- create_zorro_rng(42)
+x <- draw_normal(rng, 1000)
 hist(x)
 }

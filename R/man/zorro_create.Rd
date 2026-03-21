@@ -1,8 +1,8 @@
-\name{zorro_create}
-\alias{zorro_create}
+\name{create_zorro_rng}
+\alias{create_zorro_rng}
 \title{Create a Zorro RNG Instance}
 \usage{
-zorro_create(seed = 42L)
+create_zorro_rng(seed = 42L)
 }
 \arguments{
 \item{seed}{Integer seed for the generator.}
@@ -15,6 +15,6 @@ Creates a new xoshiro256++ random number generator with automatic SIMD
 dispatch (AVX-512, AVX2, or portable fallback).
 }
 \examples{
-rng <- zorro_create(123)
-zorro_uniform(rng, 10)
+rng <- create_zorro_rng(123)
+draw_uniform(rng, 10)
 }

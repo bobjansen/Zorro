@@ -5,5 +5,7 @@ export(
   draw_uniform,
   draw_normal,
   draw_exponential,
-  draw_bernoulli
+  draw_bernoulli,
+  draw_gamma,
+  draw_student_t
 )

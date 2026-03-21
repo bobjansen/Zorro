@@ -52,3 +52,25 @@ draw_exponential <- function(rng, n, rate = 1) {
 draw_bernoulli <- function(rng, n, prob = 0.5) {
   .Call(C_zorro_bernoulli, rng, as.integer(n), as.double(prob))
 }
+
+#' Generate Gamma Random Numbers
+#'
+#' @param rng External pointer from \code{create_zorro_rng}.
+#' @param n Number of values to generate.
+#' @param alpha Shape parameter (must be >= 1).
+#' @return Numeric vector of length \code{n}.
+#' @export
+draw_gamma <- function(rng, n, alpha = 1) {
+  .Call(C_zorro_gamma, rng, as.integer(n), as.double(alpha))
+}
+
+#' Generate Student's t Random Numbers
+#'
+#' @param rng External pointer from \code{create_zorro_rng}.
+#' @param n Number of values to generate.
+#' @param df Degrees of freedom.
+#' @return Numeric vector of length \code{n}.
+#' @export
+draw_student_t <- function(rng, n, df = 1) {
+  .Call(C_zorro_student_t, rng, as.integer(n), as.double(df))
+}

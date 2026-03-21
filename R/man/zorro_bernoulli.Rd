@@ -1,11 +1,11 @@
-\name{zorro_bernoulli}
-\alias{zorro_bernoulli}
+\name{draw_bernoulli}
+\alias{draw_bernoulli}
 \title{Generate Bernoulli Random Numbers}
 \usage{
-zorro_bernoulli(rng, n, prob = 0.5)
+draw_bernoulli(rng, n, prob = 0.5)
 }
 \arguments{
-\item{rng}{External pointer from \code{zorro_create}.}
+\item{rng}{External pointer from \code{create_zorro_rng}.}
 \item{n}{Number of values to generate.}
 \item{prob}{Probability of success (default 0.5).}
 }
@@ -17,7 +17,7 @@ Generate Bernoulli random trials using threshold comparison with
 SIMD-accelerated xoshiro256++ engine.
 }
 \examples{
-rng <- zorro_create(42)
-x <- zorro_bernoulli(rng, 1000, prob = 0.3)
-mean(x)  # approximately 0.3
+rng <- create_zorro_rng(42)
+x <- draw_bernoulli(rng, 1000, prob = 0.3)
+mean(x)
 }

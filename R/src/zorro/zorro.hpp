@@ -12,6 +12,8 @@
 //   rng.fill_normal(u.data(), u.size());                 // N(0, 1)
 //   rng.fill_exponential(u.data(), u.size());            // Exp(1)
 //   rng.fill_bernoulli(u.data(), u.size(), 0.3);         // Bernoulli(0.3)
+//   rng.fill_gamma(u.data(), u.size(), 2.0);             // Gamma(alpha, 1), alpha >= 1
+//   rng.fill_student_t(u.data(), u.size(), 5.0);         // Student's t(nu)
 //
 // SIMD tier is selected at compile time:
 //   -mavx512f -mavx512vl -mavx512dq  →  16-wide AVX-512 (2×8 interleaved)
@@ -561,6 +563,28 @@ public:
 #endif
   }
 
+  // ── Gamma(alpha, 1) — Marsaglia & Tsang, alpha >= 1 ──────────────────────
+
+  void fill_gamma(double *__restrict__ out, std::size_t count,
+                  double alpha) noexcept {
+#ifdef __AVX2__
+    fill_gamma_avx2(out, count, alpha);
+#else
+    fill_gamma_portable(out, count, alpha);
+#endif
+  }
+
+  // ── Student's t(nu) = N(0,1) / sqrt(Gamma(nu/2, 1) / (nu/2)) ─────────────
+
+  void fill_student_t(double *__restrict__ out, std::size_t count,
+                      double nu) noexcept {
+#ifdef __AVX2__
+    fill_student_t_avx2(out, count, nu);
+#else
+    fill_student_t_portable(out, count, nu);
+#endif
+  }
+
 private:
   // ── State storage ────────────────────────────────────────────────────────
   //
@@ -718,6 +742,47 @@ private:
       next_x4_portable(result);
       for (std::size_t lane = 0; i < count; ++lane, ++i)
         out[i] = result[lane] < threshold ? 1.0 : 0.0;
+    }
+  }
+
+  void fill_gamma_portable(double *__restrict__ out, std::size_t count,
+                           double alpha) noexcept {
+    const double d = alpha - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+    std::uint64_t result[4];
+    std::size_t i = 0;
+    while (i < count) {
+      next_x4_portable(result);
+      const double u1 = bits_to_pm1(result[0]);
+      const double u2 = bits_to_pm1(result[1]);
+      const double sq = u1 * u1 + u2 * u2;
+      if (sq >= 1.0 || sq == 0.0) continue;
+      const double x  = u1 * std::sqrt(-2.0 * std::log(sq) / sq);
+      const double vr = 1.0 + c * x;
+      if (vr <= 0.0) continue;
+      const double v  = vr * vr * vr;
+      const double u  = bits_to_01(result[2]);
+      const double x2 = x * x;
+      if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+      if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+    }
+  }
+
+  void fill_student_t_portable(double *__restrict__ out, std::size_t count,
+                               double nu) noexcept {
+    static constexpr std::size_t kChunk = 128;
+    double z_buf[kChunk];
+    double g_buf[kChunk];
+    const double inv_half_nu = 2.0 / nu;
+    const double shape = nu / 2.0;
+    std::size_t i = 0;
+    while (i < count) {
+      const std::size_t chunk = count - i < kChunk ? count - i : kChunk;
+      fill_normal_portable(z_buf, chunk, 0.0, 1.0);
+      fill_gamma_portable(g_buf, chunk, shape);
+      for (std::size_t k = 0; k < chunk; ++k)
+        out[i + k] = z_buf[k] / std::sqrt(g_buf[k] * inv_half_nu);
+      i += chunk;
     }
   }
 
@@ -988,6 +1053,206 @@ private:
         out[i] = tail[lane];
     }
     store_avx2(a0, a1, a2, a3, b0, b1, b2, b3);
+  }
+
+  // ── Gamma (two-phase: SIMD polar → N(0,1) buffer; MT acceptance) ──────────
+
+  void fill_gamma_avx2(double *__restrict__ out, std::size_t count,
+                       double alpha) noexcept {
+    auto [a0, a1, a2, a3, b0, b1, b2, b3] = load_avx2();
+    const double d = alpha - 1.0 / 3.0;
+    const double c = 1.0 / std::sqrt(9.0 * d);
+
+    static constexpr int kBuf = 64;
+    alignas(32) double buf_x[kBuf];
+
+#ifdef ZORRO_USE_LIBMVEC
+    const __m256d one      = _mm256_set1_pd(1.0);
+    const __m256d zero     = _mm256_setzero_pd();
+    const __m256d neg2     = _mm256_set1_pd(-2.0);
+    const __m256d half     = _mm256_set1_pd(0.5);
+    const __m256d safe_val = _mm256_set1_pd(0.5);
+    const __m256d d_vec    = _mm256_set1_pd(d);
+    const __m256d c_vec    = _mm256_set1_pd(c);
+    const __m256d mt_coeff = _mm256_set1_pd(0.0331);
+
+    std::size_t i = 0;
+    while (i < count) {
+      // Phase 1: vectorized polar → buf_x
+      int n = 0;
+      while (n < kBuf) {
+        // Group a
+        {
+          const __m256d u1  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3));
+          const __m256d u2  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3));
+          const __m256d s   = _mm256_add_pd(_mm256_mul_pd(u1, u1), _mm256_mul_pd(u2, u2));
+          const __m256d acc = _mm256_and_pd(_mm256_cmp_pd(s, one, _CMP_LT_OQ),
+                                            _mm256_cmp_pd(s, zero, _CMP_GT_OQ));
+          const int bits = _mm256_movemask_pd(acc);
+          if (bits) {
+            const __m256d sf  = _mm256_blendv_pd(safe_val, s, acc);
+            const __m256d fac = _mm256_sqrt_pd(
+                _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf)), sf));
+            alignas(32) double xa[4], xa2[4];
+            _mm256_store_pd(xa,  _mm256_mul_pd(u1, fac));
+            _mm256_store_pd(xa2, _mm256_mul_pd(u2, fac));
+            for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+              if (bits & (1 << lane)) {
+                buf_x[n++] = xa[lane];
+                if (n < kBuf) buf_x[n++] = xa2[lane];
+              }
+            }
+          }
+        }
+        // Group b
+        {
+          const __m256d u1  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3));
+          const __m256d u2  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3));
+          const __m256d s   = _mm256_add_pd(_mm256_mul_pd(u1, u1), _mm256_mul_pd(u2, u2));
+          const __m256d acc = _mm256_and_pd(_mm256_cmp_pd(s, one, _CMP_LT_OQ),
+                                            _mm256_cmp_pd(s, zero, _CMP_GT_OQ));
+          const int bits = _mm256_movemask_pd(acc);
+          if (bits) {
+            const __m256d sf  = _mm256_blendv_pd(safe_val, s, acc);
+            const __m256d fac = _mm256_sqrt_pd(
+                _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf)), sf));
+            alignas(32) double xb[4], xb2[4];
+            _mm256_store_pd(xb,  _mm256_mul_pd(u1, fac));
+            _mm256_store_pd(xb2, _mm256_mul_pd(u2, fac));
+            for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+              if (bits & (1 << lane)) {
+                buf_x[n++] = xb[lane];
+                if (n < kBuf) buf_x[n++] = xb2[lane];
+              }
+            }
+          }
+        }
+      }
+      // Phase 2: vectorized MT acceptance using group a for uniforms
+      int k = 0;
+      for (; k + 4 <= n && i < count; k += 4) {
+        const __m256d x  = _mm256_load_pd(buf_x + k);
+        const __m256d u  = detail::u64_to_uniform01_avx2(
+            detail::next_x4_avx2(a0, a1, a2, a3));
+        const __m256d vr     = _mm256_add_pd(one, _mm256_mul_pd(c_vec, x));
+        const __m256d vr_pos = _mm256_cmp_pd(vr, zero, _CMP_GT_OQ);
+        const __m256d sv     = _mm256_blendv_pd(one, vr, vr_pos);
+        const __m256d v      = _mm256_mul_pd(sv, _mm256_mul_pd(sv, sv));
+        const __m256d x2          = _mm256_mul_pd(x, x);
+        const __m256d x4          = _mm256_mul_pd(x2, x2);
+        const __m256d fast_thresh = _mm256_sub_pd(one, _mm256_mul_pd(mt_coeff, x4));
+        const __m256d fast_acc    = _mm256_cmp_pd(u, fast_thresh, _CMP_LT_OQ);
+        const __m256d log_u    = _ZGVdN4v_log(u);
+        const __m256d log_v    = _ZGVdN4v_log(v);
+        const __m256d slow_rhs = _mm256_add_pd(
+            _mm256_mul_pd(half, x2),
+            _mm256_mul_pd(d_vec, _mm256_add_pd(_mm256_sub_pd(one, v), log_v)));
+        const __m256d slow_acc   = _mm256_cmp_pd(log_u, slow_rhs, _CMP_LT_OQ);
+        const __m256d accept     = _mm256_and_pd(vr_pos, _mm256_or_pd(fast_acc, slow_acc));
+        const int     accept_bits = _mm256_movemask_pd(accept);
+        if (accept_bits) {
+          alignas(32) double gv[4];
+          _mm256_store_pd(gv, _mm256_mul_pd(d_vec, v));
+          for (int lane = 0; lane < 4 && i < count; ++lane) {
+            if (accept_bits & (1 << lane))
+              out[i++] = gv[lane];
+          }
+        }
+      }
+      // Scalar tail
+      for (; k < n && i < count; ++k) {
+        const double x  = buf_x[k];
+        const double vr = 1.0 + c * x;
+        if (vr <= 0.0) continue;
+        const double v  = vr * vr * vr;
+        alignas(32) double utail[4];
+        _mm256_store_pd(utail, detail::u64_to_uniform01_avx2(
+                                   detail::next_x4_avx2(a0, a1, a2, a3)));
+        const double u  = utail[0];
+        const double x2 = x * x;
+        if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+        if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+      }
+    }
+#else
+    // SIMD RNG + scalar polar + scalar MT
+    alignas(32) double tmp_u1[4], tmp_u2[4];
+    std::size_t i = 0;
+    while (i < count) {
+      // Phase 1: fill buf_x with N(0,1) values
+      int n = 0;
+      while (n < kBuf) {
+        _mm256_store_pd(tmp_u1, detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3)));
+        _mm256_store_pd(tmp_u2, detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3)));
+        for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+          const double u1 = tmp_u1[lane], u2 = tmp_u2[lane];
+          const double sq = u1 * u1 + u2 * u2;
+          if (sq >= 1.0 || sq == 0.0) [[unlikely]] continue;
+          const double scale = std::sqrt(-2.0 * std::log(sq) / sq);
+          buf_x[n++] = u1 * scale;
+          if (n < kBuf) buf_x[n++] = u2 * scale;
+        }
+        _mm256_store_pd(tmp_u1, detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3)));
+        _mm256_store_pd(tmp_u2, detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3)));
+        for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
+          const double u1 = tmp_u1[lane], u2 = tmp_u2[lane];
+          const double sq = u1 * u1 + u2 * u2;
+          if (sq >= 1.0 || sq == 0.0) [[unlikely]] continue;
+          const double scale = std::sqrt(-2.0 * std::log(sq) / sq);
+          buf_x[n++] = u1 * scale;
+          if (n < kBuf) buf_x[n++] = u2 * scale;
+        }
+      }
+      // Phase 2: scalar MT acceptance, uniforms drawn from a stream
+      alignas(32) double u_batch[4];
+      int k = 0;
+      for (; k + 4 <= n && i < count; k += 4) {
+        _mm256_store_pd(u_batch, detail::u64_to_uniform01_avx2(
+                                     detail::next_x4_avx2(a0, a1, a2, a3)));
+        for (int lane = 0; lane < 4 && i < count; ++lane) {
+          const double x  = buf_x[k + lane];
+          const double vr = 1.0 + c * x;
+          if (vr <= 0.0) continue;
+          const double v  = vr * vr * vr;
+          const double u  = u_batch[lane];
+          const double x2 = x * x;
+          if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+          if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+        }
+      }
+      for (; k < n && i < count; ++k) {
+        const double x  = buf_x[k];
+        const double vr = 1.0 + c * x;
+        if (vr <= 0.0) continue;
+        const double v  = vr * vr * vr;
+        _mm256_store_pd(u_batch, detail::u64_to_uniform01_avx2(
+                                     detail::next_x4_avx2(a0, a1, a2, a3)));
+        const double u  = u_batch[0];
+        const double x2 = x * x;
+        if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
+        if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
+      }
+    }
+#endif
+    store_avx2(a0, a1, a2, a3, b0, b1, b2, b3);
+  }
+
+  void fill_student_t_avx2(double *__restrict__ out, std::size_t count,
+                           double nu) noexcept {
+    static constexpr std::size_t kChunk = 128;
+    alignas(32) double z_buf[kChunk];
+    alignas(32) double g_buf[kChunk];
+    const double inv_half_nu = 2.0 / nu;
+    const double shape = nu / 2.0;
+    std::size_t i = 0;
+    while (i < count) {
+      const std::size_t chunk = count - i < kChunk ? count - i : kChunk;
+      fill_normal_avx2(z_buf, chunk, 0.0, 1.0);
+      fill_gamma_avx2(g_buf, chunk, shape);
+      for (std::size_t k = 0; k < chunk; ++k)
+        out[i + k] = z_buf[k] / std::sqrt(g_buf[k] * inv_half_nu);
+      i += chunk;
+    }
   }
 #endif // __AVX2__
 
