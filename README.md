@@ -128,6 +128,23 @@ CMake options:
 The benchmark uses a fixed seed and reports the best, median, and mean
 wall-clock time plus derived throughput in samples/second.
 
+### Dieharder
+
+If `dieharder` is installed, you can run a targeted battery against the raw
+`xoshiro256++` bitstreams exported by the library:
+
+```bash
+./benchmarks/run_dieharder.sh
+```
+
+Useful options:
+
+- `--stream scalar|x2|x4|all` to select which generator layout to test.
+- `--out-dir DIR` to keep the raw `dieharder` reports in a specific folder.
+
+The script builds `dieharder_stream` if needed and automatically reruns any
+`WEAK` or `FAILED` result in ambiguity-resolution mode (`-k 2 -Y 1`).
+
 ### AWS benchmarking
 
 `aws/bench.sh` launches spot instances, uploads the source, builds with

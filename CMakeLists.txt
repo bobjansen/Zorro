@@ -57,6 +57,16 @@ add_executable(
     benchmarks/zorro_benchmark_kernels.cpp
 )
 
+add_executable(
+    quality_tests
+    benchmarks/quality_tests.cpp
+)
+
+add_executable(
+    dieharder_stream
+    benchmarks/dieharder_stream.cpp
+)
+
 target_include_directories(
     benchmark_distributions
     PRIVATE
@@ -64,8 +74,34 @@ target_include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+target_include_directories(
+    quality_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_include_directories(
+    dieharder_stream
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 target_compile_options(
     benchmark_distributions
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+)
+
+target_compile_options(
+    quality_tests
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+)
+
+target_compile_options(
+    dieharder_stream
     PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
 )
@@ -78,9 +114,35 @@ target_link_libraries(
         mvec
 )
 
+target_link_libraries(
+    quality_tests
+    PRIVATE
+        m
+        mvec
+)
+
+target_link_libraries(
+    dieharder_stream
+    PRIVATE
+        m
+        mvec
+)
+
 if(RNG_BENCH_ENABLE_AVX512)
     target_compile_options(
         benchmark_distributions
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+
+    target_compile_options(
+        quality_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+
+    target_compile_options(
+        dieharder_stream
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
     )
@@ -92,6 +154,18 @@ if(RNG_BENCH_ENABLE_NATIVE)
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
     )
+
+    target_compile_options(
+        quality_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+    )
+
+    target_compile_options(
+        dieharder_stream
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+    )
 endif()
 
 # Optional SIMD override flags appended after -march=native so they win.
@@ -100,6 +174,8 @@ set(RNG_BENCH_MARCH_FLAGS "" CACHE STRING "Extra SIMD override flags (appended a
 if(RNG_BENCH_MARCH_FLAGS)
     separate_arguments(_march_flags UNIX_COMMAND "${RNG_BENCH_MARCH_FLAGS}")
     target_compile_options(benchmark_distributions PRIVATE ${_march_flags})
+    target_compile_options(quality_tests PRIVATE ${_march_flags})
+    target_compile_options(dieharder_stream PRIVATE ${_march_flags})
 endif()
 
 if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)
