@@ -66,6 +66,16 @@ void fill_xoshiro256pp_x8_bernoulli_u8_half_skip16(std::uint64_t seed,
                                                     std::uint8_t* out,
                                                     std::size_t count) noexcept;
 
+// ── Bernoulli(0.5) → packed bitmask (1 bit per sample) ──────────────────────
+// Each uint64_t contains 52 independent trials in bits [0..51].
+// Bits [52..63] are zero (discarded weak low bits after >> 12).
+// count is in *samples* (bits), not words. Output buffer must hold
+// at least ceil(count / 52) * 8 bytes (since each call produces
+// 4 × 52 = 208 bits = 4 words, buffer needs ceil(count/208)*32 bytes).
+void fill_xoshiro256pp_x8_bernoulli_bits(std::uint64_t seed,
+                                          std::uint64_t* out,
+                                          std::size_t count) noexcept;
+
 // Gamma(alpha, 1) — Marsaglia-Tsang
 void fill_gamma_scalar_fused(std::uint64_t seed, double alpha, double* out,
                               std::size_t count) noexcept;

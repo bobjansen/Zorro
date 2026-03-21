@@ -1614,6 +1614,64 @@ void fill_xoshiro256pp_x8_bernoulli_u8_half_skip16(std::uint64_t seed,
     fill_bernoulli_u8_half_impl<16>(seed, out, count);
 }
 
+// ─── Bernoulli(0.5) → packed bitmask ─────────────────────────────────────────
+// Raw RNG output >> 12, stored directly. Each uint64_t has 52 quality bits.
+// count is in samples (bits). We fill ceil(count/208) × 8 words, each shifted.
+void fill_xoshiro256pp_x8_bernoulli_bits(std::uint64_t seed,
+                                          std::uint64_t* out,
+                                          std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    // Each x4 call produces 4 uint64_t, each with 52 usable bits = 208 samples.
+    // We need ceil(count / 208) calls. Write 4 words per call.
+    static constexpr int kBitsPerWord = 52;
+    static constexpr int kWordsPerCall = 4;
+    static constexpr int kSamplesPerCall = kBitsPerWord * kWordsPerCall;  // 208
+
+    std::size_t samples_done = 0;
+    std::size_t wi = 0;
+
+    while (samples_done + 2 * kSamplesPerCall <= count) {
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + wi),
+            _mm256_srli_epi64(next_x4_avx2(a0, a1, a2, a3), kBernoulliSkipBits));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + wi + 4),
+            _mm256_srli_epi64(next_x4_avx2(b0, b1, b2, b3), kBernoulliSkipBits));
+        wi += 8;
+        samples_done += 2 * kSamplesPerCall;
+    }
+    if (samples_done + kSamplesPerCall <= count) {
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(out + wi),
+            _mm256_srli_epi64(next_x4_avx2(a0, a1, a2, a3), kBernoulliSkipBits));
+        wi += 4;
+        samples_done += kSamplesPerCall;
+    }
+    // Tail: partial call
+    if (samples_done < count) {
+        alignas(32) std::uint64_t tmp[4];
+        _mm256_store_si256(reinterpret_cast<__m256i*>(tmp),
+            _mm256_srli_epi64(next_x4_avx2(a0, a1, a2, a3), kBernoulliSkipBits));
+        for (int lane = 0; lane < 4 && samples_done < count; ++lane) {
+            out[wi++] = tmp[lane];
+            samples_done += kBitsPerWord;
+        }
+    }
+#else
+    (void)seed; (void)out; (void)count;
+#endif
+}
+
 // ─── Gamma(alpha, 1) — Marsaglia-Tsang algorithm ─────────────────────────────
 //
 // For shape alpha >= 1:  d = alpha − 1/3,  c = 1/√(9d)

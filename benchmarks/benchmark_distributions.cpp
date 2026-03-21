@@ -21,7 +21,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using Milliseconds = std::chrono::duration<double, std::milli>;
 
-constexpr std::size_t kSampleCount = 1u << 20;
+constexpr std::size_t kSampleCount = 1u << 24;
 constexpr std::uint64_t kSeed = 0x123456789abcdef0ULL;
 constexpr int kWarmupIterations = 3;
 constexpr int kMeasureIterations = 21;
@@ -342,7 +342,61 @@ void fill_bernoulli_u8_half_bits(std::uint8_t* out, std::size_t count) {
 void fill_bernoulli_u8_half_bits_skip16(std::uint8_t* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_half_skip16(kSeed, out, count);
 }
+
+void fill_bernoulli_bits(std::uint64_t* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_bits(kSeed, out, count);
+}
 #endif
+
+// run_benchmark_bits: bitmask output benchmark. count is in samples (bits).
+// Buffer is uint64_t, checksum via popcount for comparability with uint8_t path.
+template <typename FillFn>
+auto run_benchmark_bits(std::string name, FillFn&& fill) -> BenchmarkResult {
+    // 52 usable bits per word → need ceil(kSampleCount/52) words
+    static constexpr std::size_t kBitsPerWord = 52;
+    static constexpr std::size_t kNumWords =
+        (kSampleCount + kBitsPerWord - 1) / kBitsPerWord;
+    std::vector<std::uint64_t> words(kNumWords + 4);  // +4 for tail overwrite
+
+    for (int i = 0; i < kWarmupIterations; ++i)
+        fill(words.data(), kSampleCount);
+
+    std::vector<double> times_ms;
+    times_ms.reserve(kMeasureIterations);
+    double checksum = 0.0;
+
+    for (int i = 0; i < kMeasureIterations; ++i) {
+        const auto start = Clock::now();
+        fill(words.data(), kSampleCount);
+        const auto stop = Clock::now();
+        times_ms.push_back(Milliseconds(stop - start).count());
+        std::uint64_t popsum = 0;
+        for (std::size_t w = 0; w < kNumWords; ++w)
+            popsum += __builtin_popcountll(words[w]);
+        checksum += static_cast<double>(popsum);
+    }
+
+    std::vector<double> sorted = times_ms;
+    std::sort(sorted.begin(), sorted.end());
+
+    const double best_ms = sorted.front();
+    const double median_ms = sorted[sorted.size() / 2];
+    const double mean_ms = std::accumulate(times_ms.begin(), times_ms.end(), 0.0) /
+                           static_cast<double>(times_ms.size());
+    const double samples_per_second =
+        static_cast<double>(kSampleCount) / (best_ms / 1000.0);
+
+    g_checksum_sink += checksum;
+
+    return BenchmarkResult{
+        .name = std::move(name),
+        .best_ms = best_ms,
+        .median_ms = median_ms,
+        .mean_ms = mean_ms,
+        .samples_per_second = samples_per_second,
+        .checksum = checksum,
+    };
+}
 
 // ── Gamma(2, 1) ──────────────────────────────────────────────────────────────
 void fill_gamma_scalar(double* out, std::size_t count) {
@@ -610,6 +664,8 @@ int main() {
                                                           fill_bernoulli_u8_half_bits));
     bernoulli_u8_half_results.push_back(run_benchmark_u8("x8 u8 bit-unpack skip16",
                                                           fill_bernoulli_u8_half_bits_skip16));
+    bernoulli_u8_half_results.push_back(run_benchmark_bits("x8 bitmask (1 bit/sample)",
+                                                            fill_bernoulli_bits));
 #endif
 
     print_results("Bernoulli(0.3) → uint8_t", bernoulli_u8_results);
