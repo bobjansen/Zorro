@@ -61,6 +61,10 @@ void fill_xoshiro256pp_x8_bernoulli_u8_fast(std::uint64_t seed, double p,
 void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
                                              std::uint8_t* out,
                                              std::size_t count) noexcept;
+// p=0.5 bit-unpack, skip 16 bits (48 usable = exact multiple of 8, no tail).
+void fill_xoshiro256pp_x8_bernoulli_u8_half_skip16(std::uint64_t seed,
+                                                    std::uint8_t* out,
+                                                    std::size_t count) noexcept;
 
 // Gamma(alpha, 1) — Marsaglia-Tsang
 void fill_gamma_scalar_fused(std::uint64_t seed, double alpha, double* out,

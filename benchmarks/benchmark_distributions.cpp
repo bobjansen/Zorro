@@ -338,6 +338,10 @@ void fill_bernoulli_u8_half_fast(std::uint8_t* out, std::size_t count) {
 void fill_bernoulli_u8_half_bits(std::uint8_t* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_half(kSeed, out, count);
 }
+
+void fill_bernoulli_u8_half_bits_skip16(std::uint8_t* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_bernoulli_u8_half_skip16(kSeed, out, count);
+}
 #endif
 
 // ── Gamma(2, 1) ──────────────────────────────────────────────────────────────
@@ -604,6 +608,8 @@ int main() {
                                                           fill_bernoulli_u8_half_fast));
     bernoulli_u8_half_results.push_back(run_benchmark_u8("x8 u8 bit-unpack",
                                                           fill_bernoulli_u8_half_bits));
+    bernoulli_u8_half_results.push_back(run_benchmark_u8("x8 u8 bit-unpack skip16",
+                                                          fill_bernoulli_u8_half_bits_skip16));
 #endif
 
     print_results("Bernoulli(0.3) → uint8_t", bernoulli_u8_results);

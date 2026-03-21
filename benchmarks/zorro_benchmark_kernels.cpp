@@ -1532,10 +1532,18 @@ void fill_xoshiro256pp_x8_bernoulli_u8_fast(std::uint64_t seed, double p,
 // Discards low 12 bits for quality (matching uniform path). 52 usable bits per
 // uint64, × 4 lanes = 208 samples per x4 call. Uses byte-broadcast + bit-mask
 // SIMD to unpack 8 bits → 8 bytes in one shot.
-void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
-                                             std::uint8_t* out,
-                                             std::size_t count) noexcept {
+// Templated on SkipBits so we can benchmark skip=12 vs skip=16.
+// skip=12 → 52 usable bits → 6 full bytes + 4-bit scalar tail
+// skip=16 → 48 usable bits → 6 full bytes, no tail (exact multiple of 8)
+template <int SkipBits>
+void fill_bernoulli_u8_half_impl(std::uint64_t seed,
+                                  std::uint8_t* out,
+                                  std::size_t count) noexcept {
 #ifdef __AVX2__
+    static constexpr int kUsableBits = 64 - SkipBits;
+    static constexpr int kFullBytes = kUsableBits / 8;
+    static constexpr int kRemainBits = kUsableBits % 8;
+
     alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
     alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
     seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
@@ -1549,17 +1557,10 @@ void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
     __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
     __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
 
-    // Bit-select mask: isolate each of 8 bits within a broadcast byte.
     const __m256i bit_mask = _mm256_set_epi8(
         -128, 64, 32, 16, 8, 4, 2, 1,  -128, 64, 32, 16, 8, 4, 2, 1,
         -128, 64, 32, 16, 8, 4, 2, 1,  -128, 64, 32, 16, 8, 4, 2, 1);
     const __m256i one_byte = _mm256_set1_epi8(1);
-
-    // After >> 12, each uint64 has 52 usable bits in positions [0..51].
-    // That's bytes [0..5] fully usable (48 bits) + 4 bits in byte [6].
-    // We process 6 full bytes (48 samples) via SIMD, then 4 remaining bits scalar.
-    static constexpr int kFullBytes = kBernoulliBitsPerLane / 8;      // 6
-    static constexpr int kRemainBits = kBernoulliBitsPerLane % 8;     // 4
 
     alignas(32) std::uint64_t raw[4];
     std::size_t i = 0;
@@ -1567,11 +1568,10 @@ void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
     auto unpack_one_call = [&](__m256i& s0, __m256i& s1, __m256i& s2, __m256i& s3)
         __attribute__((always_inline)) {
         _mm256_store_si256(reinterpret_cast<__m256i*>(raw),
-                           _mm256_srli_epi64(next_x4_avx2(s0, s1, s2, s3), kBernoulliSkipBits));
+                           _mm256_srli_epi64(next_x4_avx2(s0, s1, s2, s3), SkipBits));
 
         for (int lane = 0; lane < 4 && i < count; ++lane) {
             const auto* bytes = reinterpret_cast<const std::uint8_t*>(&raw[lane]);
-            // SIMD path: 6 full bytes → 48 samples
             for (int b = 0; b < kFullBytes && i + 8 <= count; ++b) {
                 const __m256i bcast = _mm256_set1_epi8(static_cast<char>(bytes[b]));
                 const __m256i isolated = _mm256_and_si256(bcast, bit_mask);
@@ -1580,12 +1580,13 @@ void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
                     _mm256_castsi256_si128(nonzero));
                 i += 8;
             }
-            // Remaining 4 bits from byte 6
-            if (kRemainBits > 0 && i < count) {
-                std::uint8_t tail_byte = bytes[kFullBytes];
-                for (int bit = 0; bit < kRemainBits && i < count; ++bit) {
-                    out[i++] = tail_byte & 1;
-                    tail_byte >>= 1;
+            if constexpr (kRemainBits > 0) {
+                if (i < count) {
+                    std::uint8_t tail_byte = bytes[kFullBytes];
+                    for (int bit = 0; bit < kRemainBits && i < count; ++bit) {
+                        out[i++] = tail_byte & 1;
+                        tail_byte >>= 1;
+                    }
                 }
             }
         }
@@ -1599,6 +1600,18 @@ void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
 #else
     (void)seed; (void)out; (void)count;
 #endif
+}
+
+void fill_xoshiro256pp_x8_bernoulli_u8_half(std::uint64_t seed,
+                                             std::uint8_t* out,
+                                             std::size_t count) noexcept {
+    fill_bernoulli_u8_half_impl<12>(seed, out, count);
+}
+
+void fill_xoshiro256pp_x8_bernoulli_u8_half_skip16(std::uint64_t seed,
+                                                    std::uint8_t* out,
+                                                    std::size_t count) noexcept {
+    fill_bernoulli_u8_half_impl<16>(seed, out, count);
 }
 
 // ─── Gamma(alpha, 1) — Marsaglia-Tsang algorithm ─────────────────────────────
