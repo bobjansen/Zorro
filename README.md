@@ -89,8 +89,9 @@ and is configured for C++23.
 - **Gamma(2, 1)** -- scalar fused, x8 AVX2 fused/decoupled/full
 - **Student's t(5)** -- scalar fused, x8 AVX2 fused/decoupled/fast
 
-Each suite also includes Stephan Friedl's handwritten AVX2 `Xoshiro256PlusSIMD`
-variants where applicable.
+Each suite also includes
+[Stephan Friedl's](https://stephanfr.com/2021/08/17/serial-and-simd-implementation-of-the-xoroshiro256-random-number-generator/)
+handwritten AVX2 `Xoshiro256PlusSIMD` variants where applicable.
 
 A literate programming walkthrough of the core AVX2 4x2 loop lives in
 [docs/xoshiro256pp_avx_4x2.md](docs/xoshiro256pp_avx_4x2.md).
