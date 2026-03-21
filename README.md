@@ -1,32 +1,101 @@
 # zorro
 
-Zorro is a standalone `xoshiro256++` experiment: scalar, 2-lane, 4-lane, and
-wider SIMD-oriented layouts (AVX2 and AVX-512) plus a benchmark harness for
-multiple distributions.
+Zorro is a header-only `xoshiro256++` library with automatic SIMD dispatch.
+Copy a single header into your project and get high-performance random number
+generation across uniform, normal, exponential, and Bernoulli distributions.
 
-The benchmark target is configured for C++23.
+## Usage
 
-The core public API lives in `include/zorro/zorro.hpp` under the `zorro`
-namespace. The root-level `zorro.hpp` and `rng.hpp` headers are compatibility
-shims during the cleanup.
+Copy `include/zorro/zorro.hpp` into your project. Compile with `-mavx2` or
+`-march=native` (C++20 or later).
 
-The benchmark target compares `2^20` samples across eight distribution suites:
+```cpp
+#include "zorro/zorro.hpp"
+#include <vector>
 
-- **Uniform(0, 1)** — scalar, x2, x4 portable, x4/x8 AVX2, x8/x16 AVX-512
-- **Normal(0, 1)** — polar, batched, veclog, vecpolar (AVX2 and AVX-512)
-- **Exponential(1)** — scalar log, veclog AVX2, veclog AVX-512
-- **Bernoulli(0.3)** — naive, integer-threshold AVX2, native ucmp AVX-512
-- **Bernoulli(0.3/0.5) → uint8_t** — compact 1-byte output with bit-unpack special case for p=0.5
-- **Gamma(2, 1)** — scalar fused, x8 AVX2 fused/decoupled/full
-- **Student's t(5)** — scalar fused, x8 AVX2 fused/decoupled/fast
+int main() {
+    zorro::Rng rng(42);
+    std::vector<double> buf(1'000'000);
+
+    rng.fill_uniform(buf.data(), buf.size());                   // [0, 1)
+    rng.fill_uniform(buf.data(), buf.size(), -1.0, 1.0);        // [-1, 1)
+    rng.fill_normal(buf.data(), buf.size());                     // N(0, 1)
+    rng.fill_normal(buf.data(), buf.size(), 100.0, 15.0);        // N(100, 15)
+    rng.fill_exponential(buf.data(), buf.size());                // Exp(1)
+    rng.fill_exponential(buf.data(), buf.size(), 0.5);           // Exp(0.5)
+    rng.fill_bernoulli(buf.data(), buf.size(), 0.3);             // Bernoulli(0.3)
+}
+```
+
+### SIMD dispatch
+
+The SIMD tier is selected at compile time based on which instruction sets are
+enabled. Within a tier, runtime CPUID checks handle AMD/Intel differences.
+
+| Compile flags | Engine | Uniform throughput |
+|---|---|---|
+| `-mavx512f -mavx512vl -mavx512dq` | 16-wide AVX-512 (2x8 interleaved) | ~3300 M/s |
+| `-mavx2` | 8-wide AVX2 (2x4 interleaved) | ~2900 M/s |
+| (neither) | 4-wide portable (compiler auto-vec) | ~1200 M/s |
+
+The AMD Zen 4 runtime check applies to FP-heavy kernels (normal): 512-bit
+sqrt/div serialize on the 256-bit datapath, so the library falls back to AVX2
+vecpolar automatically. Integer-only kernels (uniform, bernoulli) use AVX-512
+at full speed on AMD.
+
+### Vectorized log (optional)
+
+Normal and exponential generation involve `log()`. By default, Zorro uses SIMD
+for the RNG core and scalar `std::log` for the transcendental. On glibc
+systems, define `ZORRO_USE_LIBMVEC` and link `-lmvec -lm` for fully vectorized
+log:
+
+```cpp
+#define ZORRO_USE_LIBMVEC
+#include "zorro/zorro.hpp"
+```
+
+```bash
+g++ -O2 -mavx2 -DZORRO_USE_LIBMVEC main.cpp -lmvec -lm
+```
+
+| Distribution | Without libmvec | With libmvec |
+|---|---|---|
+| Normal | ~230 M/s | ~400 M/s |
+| Exponential | ~280 M/s | ~860 M/s |
+
+### Other API
+
+The header also provides building-block types for direct use:
+
+- **`zorro::Xoshiro256pp`** -- scalar engine, satisfies `UniformRandomBitGenerator`
+  (drop-in for `std::uniform_int_distribution(rng)` etc.)
+- **`zorro::Xoshiro256pp_x2`** / **`zorro::Xoshiro256pp_x4_portable`** -- portable
+  multi-lane engines (SoA layout, compiler auto-vectorizes)
+- **`zorro::splitmix64`**, **`zorro::bits_to_01`**, **`zorro::bits_to_pm1`** --
+  seed expansion and bit-to-float conversion utilities
+- **`zorro::get_rng()`** / **`zorro::reseed(seed)`** -- thread-local `Rng` singleton
+
+## Benchmarks
+
+The benchmark target compares `2^20` samples across eight distribution suites
+and is configured for C++23.
+
+- **Uniform(0, 1)** -- scalar, x2, x4 portable, x4/x8 AVX2, x8/x16 AVX-512
+- **Normal(0, 1)** -- polar, batched, veclog, vecpolar (AVX2 and AVX-512)
+- **Exponential(1)** -- scalar log, veclog AVX2, veclog AVX-512
+- **Bernoulli(0.3)** -- naive, integer-threshold AVX2, native ucmp AVX-512
+- **Bernoulli(0.3/0.5) -> uint8_t** -- compact 1-byte output with bit-unpack special case for p=0.5
+- **Gamma(2, 1)** -- scalar fused, x8 AVX2 fused/decoupled/full
+- **Student's t(5)** -- scalar fused, x8 AVX2 fused/decoupled/fast
 
 Each suite also includes Stephan Friedl's handwritten AVX2 `Xoshiro256PlusSIMD`
 variants where applicable.
 
-A literate programming walkthrough of the core AVX2 4×2 loop lives in
+A literate programming walkthrough of the core AVX2 4x2 loop lives in
 [docs/xoshiro256pp_avx_4x2.md](docs/xoshiro256pp_avx_4x2.md).
 
-## Build
+### Build
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -49,7 +118,7 @@ CMake options:
 | `RNG_BENCH_ENABLE_STEPHANFR_AVX2` | auto-detected | Stephan Friedl's AVX2 comparison. Auto-enabled when the compiler supports `-mavx2`. |
 | `RNG_BENCH_MARCH_FLAGS` | `""` | Extra SIMD override flags appended after `-march=native` (e.g. `-mno-avx512f`). |
 
-## Run
+### Run
 
 ```bash
 ./build/benchmark_distributions
@@ -78,8 +147,8 @@ Results from `aws/bench.sh` (GCC 15, native SIMD, best ms).
 | Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
 |---|---|---|---|
 | scalar | 1.073 / 977 M/s | 1.262 / 831 M/s | 1.492 / 703 M/s |
-| x8 AVX2 (2×4) | 0.268 / 3916 M/s | 0.362 / 2895 M/s | 0.348 / 3015 M/s |
-| x16 AVX-512 (2×8) | 0.273 / 3840 M/s | 0.318 / 3299 M/s | 0.321 / 3263 M/s |
+| x8 AVX2 (2x4) | 0.268 / 3916 M/s | 0.362 / 2895 M/s | 0.348 / 3015 M/s |
+| x16 AVX-512 (2x8) | 0.273 / 3840 M/s | 0.318 / 3299 M/s | 0.321 / 3263 M/s |
 
 AVX-512 uniform is a modest win on Intel (~8-14% over AVX2) but roughly breaks
 even on AMD, where integer/bitwise 512-bit ops split into 256-bit micro-op
@@ -92,11 +161,11 @@ pairs at full throughput.
 | x8 AVX2 + vecpolar | 3.046 / 344 M/s | 3.022 / 347 M/s | 3.627 / 289 M/s |
 | x16 AVX-512 + vecpolar | 3.052 / 344 M/s | 2.158 / 486 M/s | 2.643 / 397 M/s |
 
-AVX-512 vecpolar gives a 1.3-1.4× speedup on Intel thanks to native 512-bit
+AVX-512 vecpolar gives a 1.3-1.4x speedup on Intel thanks to native 512-bit
 sqrt/div and hardware compress-store. On AMD Zen 4, the kernel automatically
 falls back to AVX2 vecpolar at runtime (CPUID vendor check) because 512-bit
 sqrt, div, and `_mm512_mask_compressstoreu_pd` serialize on the 256-bit
-datapath, making the AVX-512 version ~1.6× *slower* than AVX2 on AMD hardware.
+datapath, making the AVX-512 version ~1.6x *slower* than AVX2 on AMD hardware.
 
 ### Exponential and Bernoulli
 
@@ -115,13 +184,13 @@ the sign-flip workaround required by AVX2's signed-only `_mm256_cmpgt_epi64`.
 
 The Bernoulli kernels support two output formats:
 
-- **double** (8 bytes/sample) — 0.0 or 1.0, compatible with the other distribution suites.
-- **uint8_t** (1 byte/sample) — 0 or 1, 8x less memory traffic.
+- **double** (8 bytes/sample) -- 0.0 or 1.0, compatible with the other distribution suites.
+- **uint8_t** (1 byte/sample) -- 0 or 1, 8x less memory traffic.
 
 For **p = 0.5**, every bit of the raw xoshiro256++ output is an independent
 Bernoulli trial. Instead of generating a uniform double and comparing, we
-unpack individual bits directly into the output — one RNG call produces
-208 samples (52 quality bits × 4 SIMD lanes) instead of 4.
+unpack individual bits directly into the output -- one RNG call produces
+208 samples (52 quality bits x 4 SIMD lanes) instead of 4.
 
 The low 12 bits of each uint64 are discarded, matching the uniform path's
 `>> 12` and avoiding the weakest bits of the xoshiro256++ output function.
@@ -137,9 +206,14 @@ Local AVX2 results (2^20 samples, best of 21 runs):
 | fast (int threshold) | uint8_t | 0.336 | 3.1 G/s |
 | **bit-unpack (p=0.5)** | **uint8_t** | **0.050** | **21.2 G/s** |
 
+The uint8_t bit-unpack path achieves 21 billion samples/second -- roughly
+7 samples per clock cycle on a 3 GHz machine. At this speed, the RNG core
+itself is no longer the bottleneck; the limit is the byte-scatter from bits
+to the output buffer.
+
 ### Fused vs decoupled generation
 
-**Gamma(2, 1) — fused wins decisively**
+**Gamma(2, 1) -- fused wins decisively**
 
 | Kernel | c7a (Zen 4) | c7i (SPR) |
 |---|---|---|
@@ -153,7 +227,7 @@ acceptance loop directly from a 64-sample L1-resident buffer. Decoupled
 materialises intermediate normals and uniforms to the heap, paying full memory
 bandwidth for no gain.
 
-**Student's t(5) — decoupled wins**
+**Student's t(5) -- decoupled wins**
 
 | Kernel | c7a (Zen 4) | c7i (SPR) |
 |---|---|---|
@@ -169,9 +243,9 @@ independently; the memory-traffic cost is more than recovered.
 **Summary**
 
 - Fused integration is the right default when the distribution is
-  self-contained and fits in L1 (Gamma: 2× over decoupled).
+  self-contained and fits in L1 (Gamma: 2x over decoupled).
 - Decoupled is better for compound distributions where one sub-computation
-  would otherwise serialize an otherwise-vectorised pipeline (Student-t: 1.7×
+  would otherwise serialize an otherwise-vectorised pipeline (Student-t: 1.7x
   over fused).
 - AVX-512 is not extended to Gamma or Student-t: their bottleneck is the
   scalar Marsaglia-Tsang acceptance loop, not the PRNG or vectorized math.
