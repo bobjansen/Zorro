@@ -1,0 +1,11 @@
+Package: zorro
+Type: Package
+Title: High-Performance Xoshiro256++ Random Number Generator
+Version: 0.1.0
+Authors@R: person("brj", role = c("aut", "cre"), email = "bobjanse@gmail.com")
+Description: High-performance random number generation using the xoshiro256++
+    algorithm with automatic SIMD dispatch (AVX-512, AVX2, portable). Provides
+    uniform, normal, exponential, and Bernoulli distributions via vectorized
+    batch fill operations.
+License: MIT + file LICENSE
+NeedsCompilation: yes

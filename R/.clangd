@@ -1,0 +1,5 @@
+CompileFlags:
+  Add:
+    - -I/usr/share/R/include
+    - -std=c++20
+    - -Wno-cast-function-type

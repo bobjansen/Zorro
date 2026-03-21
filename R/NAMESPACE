@@ -1,0 +1,9 @@
+useDynLib(zorro, .registration = TRUE)
+
+export(
+  create_zorro_rng,
+  draw_uniform,
+  draw_normal,
+  draw_exponential,
+  draw_bernoulli
+)
