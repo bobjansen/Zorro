@@ -27,6 +27,25 @@ int main() {
 }
 ```
 
+### High-dimensional example
+
+The repo also includes a standalone example that simulates a high-dimensional
+factor model with heavy-tailed common shocks. It exposes a small swappable
+backend interface so the same workload can run on either `std` or `zorro`.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j --target high_dimensional_random_variables
+./build/high_dimensional_random_variables --backend both
+```
+
+Useful options:
+
+- `--backend std|zorro|both` to switch the RNG implementation at runtime.
+- `--dimension N` to change the random-vector dimension.
+- `--paths N` and `--repetitions N` to make the run shorter or longer.
+- `--factors N` and `--degrees-of-freedom X` to change the factor model.
+
 ### SIMD dispatch
 
 The SIMD tier is selected at compile time based on which instruction sets are

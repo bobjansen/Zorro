@@ -72,6 +72,11 @@ add_executable(
 )
 
 add_executable(
+    high_dimensional_random_variables
+    examples/high_dimensional_random_variables.cpp
+)
+
+add_executable(
     quality_tests
     benchmarks/quality_tests.cpp
 )
@@ -90,6 +95,13 @@ endif()
 
 target_include_directories(
     benchmark_distributions
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_include_directories(
+    high_dimensional_random_variables
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -125,6 +137,12 @@ target_compile_options(
 )
 
 target_compile_options(
+    high_dimensional_random_variables
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+)
+
+target_compile_options(
     quality_tests
     PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
@@ -147,6 +165,13 @@ endif()
 # libmvec provides vectorized math functions (_ZGVdN4v_log etc.)
 target_link_libraries(
     benchmark_distributions
+    PRIVATE
+        m
+        mvec
+)
+
+target_link_libraries(
+    high_dimensional_random_variables
     PRIVATE
         m
         mvec
@@ -186,6 +211,12 @@ if(RNG_BENCH_ENABLE_AVX512)
     )
 
     target_compile_options(
+        high_dimensional_random_variables
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+
+    target_compile_options(
         quality_tests
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
@@ -209,6 +240,12 @@ endif()
 if(RNG_BENCH_ENABLE_NATIVE)
     target_compile_options(
         benchmark_distributions
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+    )
+
+    target_compile_options(
+        high_dimensional_random_variables
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
     )
@@ -240,6 +277,7 @@ set(RNG_BENCH_MARCH_FLAGS "" CACHE STRING "Extra SIMD override flags (appended a
 if(RNG_BENCH_MARCH_FLAGS)
     separate_arguments(_march_flags UNIX_COMMAND "${RNG_BENCH_MARCH_FLAGS}")
     target_compile_options(benchmark_distributions PRIVATE ${_march_flags})
+    target_compile_options(high_dimensional_random_variables PRIVATE ${_march_flags})
     target_compile_options(quality_tests PRIVATE ${_march_flags})
     target_compile_options(dieharder_stream PRIVATE ${_march_flags})
     if(RNG_BENCH_HAS_TESTU01)
