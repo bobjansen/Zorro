@@ -145,6 +145,24 @@ Useful options:
 The script builds `dieharder_stream` if needed and automatically reruns any
 `WEAK` or `FAILED` result in ambiguity-resolution mode (`-k 2 -Y 1`).
 
+### TestU01
+
+If TestU01 is installed, the project also exposes a direct runner linked
+against `unif01`/`bbattery`:
+
+```bash
+./benchmarks/run_testu01.sh
+```
+
+Useful options:
+
+- `--stream scalar|x2|x4|all` to select which generator layout to test.
+- `--battery smallcrush|crush|bigcrush` to pick the TestU01 battery.
+- `--out-dir DIR` to keep the raw TestU01 reports in a specific folder.
+
+The default is `SmallCrush`, which is the practical quick check. `Crush` and
+especially `BigCrush` are much more expensive.
+
 ### AWS benchmarking
 
 `aws/bench.sh` launches spot instances, uploads the source, builds with

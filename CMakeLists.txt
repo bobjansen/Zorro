@@ -8,9 +8,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(CheckCXXCompilerFlag)
+include(CheckIncludeFileCXX)
 
 check_cxx_compiler_flag("-mavx2" RNG_BENCH_HAS_MAVX2)
 check_cxx_compiler_flag("-mavx512f" RNG_BENCH_HAS_MAVX512F)
+check_include_file_cxx("testu01/unif01.h" RNG_BENCH_HAS_TESTU01_HEADERS)
+
+find_library(RNG_BENCH_TESTU01_LIBRARY NAMES testu01)
+find_library(RNG_BENCH_TESTU01_PROBDIST_LIBRARY NAMES testu01probdist)
+find_library(RNG_BENCH_TESTU01_MYLIB_LIBRARY NAMES testu01mylib)
+
+set(RNG_BENCH_HAS_TESTU01 OFF)
+if(RNG_BENCH_HAS_TESTU01_HEADERS
+   AND RNG_BENCH_TESTU01_LIBRARY
+   AND RNG_BENCH_TESTU01_PROBDIST_LIBRARY
+   AND RNG_BENCH_TESTU01_MYLIB_LIBRARY)
+    set(RNG_BENCH_HAS_TESTU01 ON)
+endif()
 
 option(
     RNG_BENCH_ENABLE_STEPHANFR_AVX2
@@ -67,6 +81,13 @@ add_executable(
     benchmarks/dieharder_stream.cpp
 )
 
+if(RNG_BENCH_HAS_TESTU01)
+    add_executable(
+        testu01_runner
+        benchmarks/testu01_runner.cpp
+    )
+endif()
+
 target_include_directories(
     benchmark_distributions
     PRIVATE
@@ -88,6 +109,15 @@ target_include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+if(RNG_BENCH_HAS_TESTU01)
+    target_include_directories(
+        testu01_runner
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+endif()
+
 target_compile_options(
     benchmark_distributions
     PRIVATE
@@ -105,6 +135,14 @@ target_compile_options(
     PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
 )
+
+if(RNG_BENCH_HAS_TESTU01)
+    target_compile_options(
+        testu01_runner
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+    )
+endif()
 
 # libmvec provides vectorized math functions (_ZGVdN4v_log etc.)
 target_link_libraries(
@@ -128,6 +166,18 @@ target_link_libraries(
         mvec
 )
 
+if(RNG_BENCH_HAS_TESTU01)
+    target_link_libraries(
+        testu01_runner
+        PRIVATE
+            m
+            mvec
+            ${RNG_BENCH_TESTU01_LIBRARY}
+            ${RNG_BENCH_TESTU01_PROBDIST_LIBRARY}
+            ${RNG_BENCH_TESTU01_MYLIB_LIBRARY}
+    )
+endif()
+
 if(RNG_BENCH_ENABLE_AVX512)
     target_compile_options(
         benchmark_distributions
@@ -146,6 +196,14 @@ if(RNG_BENCH_ENABLE_AVX512)
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
     )
+
+    if(RNG_BENCH_HAS_TESTU01)
+        target_compile_options(
+            testu01_runner
+            PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+        )
+    endif()
 endif()
 
 if(RNG_BENCH_ENABLE_NATIVE)
@@ -166,6 +224,14 @@ if(RNG_BENCH_ENABLE_NATIVE)
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
     )
+
+    if(RNG_BENCH_HAS_TESTU01)
+        target_compile_options(
+            testu01_runner
+            PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+        )
+    endif()
 endif()
 
 # Optional SIMD override flags appended after -march=native so they win.
@@ -176,6 +242,9 @@ if(RNG_BENCH_MARCH_FLAGS)
     target_compile_options(benchmark_distributions PRIVATE ${_march_flags})
     target_compile_options(quality_tests PRIVATE ${_march_flags})
     target_compile_options(dieharder_stream PRIVATE ${_march_flags})
+    if(RNG_BENCH_HAS_TESTU01)
+        target_compile_options(testu01_runner PRIVATE ${_march_flags})
+    endif()
 endif()
 
 if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)

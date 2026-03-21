@@ -1,11 +1,10 @@
-#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <string>
 
-#include "zorro/zorro.hpp"
+#include "benchmarks/raw_stream_sources.hpp"
 
 namespace {
 
@@ -37,38 +36,6 @@ auto stream_words(std::uint64_t count, EmitFn&& emit_next) -> int {
     return 0;
 }
 
-struct X2Emitter {
-    explicit X2Emitter(std::uint64_t seed) : rng(seed) {}
-
-    auto operator()() -> std::uint64_t {
-        if (index == buffer.size()) {
-            buffer = rng();
-            index = 0;
-        }
-        return buffer[index++];
-    }
-
-    zorro::Xoshiro256pp_x2 rng;
-    std::array<std::uint64_t, 2> buffer = {};
-    std::size_t index = 2;
-};
-
-struct X4Emitter {
-    explicit X4Emitter(std::uint64_t seed) : rng(seed) {}
-
-    auto operator()() -> std::uint64_t {
-        if (index == buffer.size()) {
-            buffer = rng();
-            index = 0;
-        }
-        return buffer[index++];
-    }
-
-    zorro::Xoshiro256pp_x4_portable rng;
-    std::array<std::uint64_t, 4> buffer = {};
-    std::size_t index = 4;
-};
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -86,15 +53,15 @@ int main(int argc, char** argv) {
     std::cout.rdbuf()->pubsetbuf(nullptr, 0);
 
     if (mode == "scalar") {
-        zorro::Xoshiro256pp rng(seed);
+        zorro_bench::ScalarEmitter rng(seed);
         return stream_words(count, [&] { return rng(); });
     }
     if (mode == "x2") {
-        X2Emitter emitter(seed);
+        zorro_bench::X2Emitter emitter(seed);
         return stream_words(count, emitter);
     }
     if (mode == "x4") {
-        X4Emitter emitter(seed);
+        zorro_bench::X4Emitter emitter(seed);
         return stream_words(count, emitter);
     }
 

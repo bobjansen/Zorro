@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs on an Ubuntu 24.04 EC2 instance: install latest GCC + Clang, build, benchmark.
+# Runs on an Ubuntu 24.04 EC2 instance: install latest GCC + Clang, TestU01, build, benchmark.
 # Build/install noise goes to stderr; clean results go to stdout.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -19,8 +19,11 @@ sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test >/dev/null 2>&1 || true
 
 sudo apt-get update -qq >&2
 
-# Build essentials
-sudo apt-get install -y -qq cmake make build-essential lsb-release wget >&2
+# Build essentials + RNG test tooling
+sudo apt-get install -y -qq \
+    cmake make build-essential lsb-release wget \
+    libtestu01-0-dev testu01-bin \
+    >&2
 
 # Latest GCC (try 15 down to 14)
 GCC=""
@@ -103,6 +106,10 @@ echo ""
 echo "=== COMPILERS ==="
 echo "GCC:   $($GCC --version | head -1)"
 echo "Clang: $($CLANG --version | head -1)"
+echo ""
+
+echo "=== TEST TOOLS ==="
+dpkg-query -W -f='${Package}: ${Version}\n' libtestu01-0-dev testu01-bin 2>/dev/null || true
 echo ""
 
 # ── AVX-512 rotate check & benchmarks ────────────────────────────────────────
