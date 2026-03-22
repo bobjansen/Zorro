@@ -266,6 +266,10 @@ void fill_exponential_x8_veclog(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x8_exponential_avx2(kSeed, out, count);
 }
 
+void fill_exponential_x8_fastlog(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_exponential_avx2_fastlog(kSeed, out, count);
+}
+
 void fill_bernoulli_x8_naive(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x8_bernoulli_naive(kSeed, 0.3, out, count);
 }
@@ -624,15 +628,29 @@ int main() {
 #endif
 
     std::vector<BenchmarkResult> exponential_results;
-    exponential_results.reserve(4);
+    exponential_results.reserve(6);
+    zorro::Rng persistent_exponential_rng(kSeed);
+    exponential_results.push_back(run_benchmark(
+        "zorro::Rng fill_exponential persistent",
+        [&](double* out, std::size_t count) {
+            persistent_exponential_rng.fill_exponential(out, count);
+        }));
+    exponential_results.push_back(run_benchmark(
+        "zorro::Rng fill_exponential fresh",
+        [](double* out, std::size_t count) {
+            zorro::Rng rng(kSeed);
+            rng.fill_exponential(out, count);
+        }));
 #ifdef __AVX2__
     exponential_results.push_back(run_benchmark("x8 AVX2 + scalar -log(u)",
                                                 fill_exponential_x8_naive));
-    exponential_results.push_back(run_benchmark("x8 AVX2 + veclog -log(u)",
+    exponential_results.push_back(run_benchmark("x8 AVX2 + libmvec -log(u)",
                                                 fill_exponential_x8_veclog));
+    exponential_results.push_back(run_benchmark("x8 AVX2 + fastlog -log(1-u)",
+                                                fill_exponential_x8_fastlog));
 #endif
 #ifdef __AVX512F__
-    exponential_results.push_back(run_benchmark("x16 AVX-512 + veclog -log(u)",
+    exponential_results.push_back(run_benchmark("x16 AVX-512 + libmvec -log(u)",
                                                 fill_exponential_x16_avx512));
 #endif
 

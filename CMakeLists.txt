@@ -104,6 +104,11 @@ add_executable(
     benchmarks/zorro_benchmark_kernels.cpp
 )
 
+add_executable(
+    exponential_transform_tests
+    tests/exponential_transform_tests.cpp
+)
+
 if(RNG_BENCH_HAS_TESTU01)
     add_executable(
         testu01_runner
@@ -160,6 +165,13 @@ target_include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+target_include_directories(
+    exponential_transform_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 if(RNG_BENCH_HAS_TESTU01)
     target_include_directories(
         testu01_runner
@@ -211,6 +223,12 @@ target_compile_options(
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
 )
 
+target_compile_options(
+    exponential_transform_tests
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+)
+
 if(RNG_BENCH_HAS_TESTU01)
     target_compile_options(
         testu01_runner
@@ -234,6 +252,12 @@ target_compile_definitions(
 
 target_compile_definitions(
     normal_transform_tests
+    PRIVATE
+        ZORRO_USE_LIBMVEC
+)
+
+target_compile_definitions(
+    exponential_transform_tests
     PRIVATE
         ZORRO_USE_LIBMVEC
 )
@@ -287,6 +311,13 @@ target_link_libraries(
         mvec
 )
 
+target_link_libraries(
+    exponential_transform_tests
+    PRIVATE
+        m
+        mvec
+)
+
 if(RNG_BENCH_HAS_TESTU01)
     target_link_libraries(
         testu01_runner
@@ -332,6 +363,12 @@ if(RNG_BENCH_ENABLE_AVX512)
 
     target_compile_options(
         normal_transform_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+
+    target_compile_options(
+        exponential_transform_tests
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
     )
@@ -389,6 +426,12 @@ if(RNG_BENCH_ENABLE_NATIVE)
     )
 
     target_compile_options(
+        exponential_transform_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+    )
+
+    target_compile_options(
         dieharder_stream
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
@@ -414,6 +457,7 @@ if(RNG_BENCH_MARCH_FLAGS)
     target_compile_options(normal_transform_comparison PRIVATE ${_march_flags})
     target_compile_options(quality_tests PRIVATE ${_march_flags})
     target_compile_options(normal_transform_tests PRIVATE ${_march_flags})
+    target_compile_options(exponential_transform_tests PRIVATE ${_march_flags})
     target_compile_options(dieharder_stream PRIVATE ${_march_flags})
     if(RNG_BENCH_HAS_TESTU01)
         target_compile_options(testu01_runner PRIVATE ${_march_flags})
@@ -459,9 +503,16 @@ if(RNG_BENCH_HAS_MAVX2)
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
     )
+
+    target_compile_options(
+        exponential_transform_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
+    )
 endif()
 
 add_test(NAME normal_transform_tests COMMAND normal_transform_tests)
+add_test(NAME exponential_transform_tests COMMAND exponential_transform_tests)
 
 if(RNG_BENCH_ENABLE_AVX512)
     add_executable(

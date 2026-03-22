@@ -21,13 +21,6 @@ extern "C" __m256d _ZGVdN4v_log(__m256d) noexcept;
 extern "C" __m256d _ZGVdN4v_sin(__m256d) noexcept;
 extern "C" __m256d _ZGVdN4v_cos(__m256d) noexcept;
 
-inline auto floatbitmask64_avx2(__m256i bits) noexcept -> __m256d {
-    const __m256i exponent = _mm256_set1_epi64x(0x3ff0000000000000ULL);
-    const __m256i mantissa = _mm256_and_si256(
-        bits, _mm256_set1_epi64x(static_cast<std::int64_t>(0x000fffffffffffffULL)));
-    return _mm256_castsi256_pd(_mm256_or_si256(mantissa, exponent));
-}
-
 inline auto approx_sin8_avx2(__m256d x) noexcept -> __m256d {
     const __m256d c0 = _mm256_set1_pd(2.2214414690791831);
     const __m256d c1 = _mm256_set1_pd(-0.9135311874994298);
@@ -61,7 +54,7 @@ inline auto apply_sign_from_bits_avx2(__m256d magnitude, __m256i sign_source_bit
 }
 
 inline void randsincos_approx_avx2(__m256i u, __m256d& s, __m256d& c) noexcept {
-    const __m256d r = floatbitmask64_avx2(u);
+    const __m256d r = zorro::detail::floatbitmask64_avx2(u);
     const __m256d one_open = _mm256_set1_pd(0.9999999999999999);
     const __m256d sub_one_open = _mm256_set1_pd(1.9999999999999998);
     const __m256d sininput = _mm256_sub_pd(r, one_open);
@@ -70,60 +63,6 @@ inline void randsincos_approx_avx2(__m256i u, __m256d& s, __m256d& c) noexcept {
 
     s = apply_sign_from_bits_avx2(approx_sin8_avx2(sininput), u);
     c = apply_sign_from_bits_avx2(approx_sin8_avx2(cosinput), _mm256_slli_epi64(u, 1));
-}
-
-inline auto log2_3q_avx2(__m256d v, __m256d e) noexcept -> __m256d {
-    const __m256d c0 = _mm256_set1_pd(0.22119417504560815);
-    const __m256d c1 = _mm256_set1_pd(0.22007686931522777);
-    const __m256d c2 = _mm256_set1_pd(0.26237080574885147);
-    const __m256d c3 = _mm256_set1_pd(0.32059774779444955);
-    const __m256d c4 = _mm256_set1_pd(0.41219859454853247);
-    const __m256d c5 = _mm256_set1_pd(0.5770780162997059);
-    const __m256d c6 = _mm256_set1_pd(0.9617966939260809);
-    const __m256d scale = _mm256_set1_pd(2.8853900817779268);
-
-    const __m256d m1 = _mm256_mul_pd(v, v);
-    const __m256d fma1 = _mm256_add_pd(_mm256_mul_pd(m1, c0), c1);
-    const __m256d fma2 = _mm256_add_pd(_mm256_mul_pd(fma1, m1), c2);
-    const __m256d fma3 = _mm256_add_pd(_mm256_mul_pd(fma2, m1), c3);
-    const __m256d fma4 = _mm256_add_pd(_mm256_mul_pd(fma3, m1), c4);
-    const __m256d fma5 = _mm256_add_pd(_mm256_mul_pd(fma4, m1), c5);
-    const __m256d fma6 = _mm256_add_pd(_mm256_mul_pd(fma5, m1), c6);
-
-    const __m256d m2 = _mm256_mul_pd(v, scale);
-    const __m256d a1 = _mm256_add_pd(e, m2);
-    const __m256d s1 = _mm256_sub_pd(e, a1);
-    const __m256d a2 = _mm256_add_pd(m2, s1);
-    const __m256d a3 = a2;
-    const __m256d m3 = _mm256_mul_pd(v, m1);
-    const __m256d a4 = _mm256_add_pd(a1, a3);
-    return _mm256_add_pd(_mm256_mul_pd(fma6, m3), a4);
-}
-
-inline auto fast_neglog01_avx2(__m256d u) noexcept -> __m256d {
-    const __m256i bits = _mm256_castpd_si256(u);
-    const __m256i exponent_mask = _mm256_set1_epi64x(0x7ff0000000000000ULL);
-    const __m256i mantissa_mask = _mm256_set1_epi64x(0x000fffffffffffffULL);
-    const __m256i exponent_bits = _mm256_set1_epi64x(0x3ff0000000000000ULL);
-    const __m256d four_thirds = _mm256_set1_pd(1.3333333333333333);
-    const __m256d neg_ln2 = _mm256_set1_pd(-0.6931471805599453);
-
-    alignas(32) std::uint64_t exp_words[4];
-    alignas(32) double exp_doubles[4];
-    _mm256_store_si256(reinterpret_cast<__m256i*>(exp_words),
-                       _mm256_srli_epi64(_mm256_and_si256(bits, exponent_mask), 52));
-    for (int lane = 0; lane < 4; ++lane) {
-        exp_doubles[lane] =
-            static_cast<double>(static_cast<std::int64_t>(exp_words[lane]) - 1023) +
-            0.4150374992788438;
-    }
-
-    const __m256d mantissa = _mm256_castsi256_pd(
-        _mm256_or_si256(_mm256_and_si256(bits, mantissa_mask), exponent_bits));
-    const __m256d v = _mm256_div_pd(_mm256_sub_pd(mantissa, four_thirds),
-                                    _mm256_add_pd(mantissa, four_thirds));
-    const __m256d log2_u = log2_3q_avx2(v, _mm256_load_pd(exp_doubles));
-    return _mm256_max_pd(_mm256_mul_pd(neg_ln2, log2_u), _mm256_setzero_pd());
 }
 
 struct BoxMullerX8Stream {
@@ -202,11 +141,13 @@ struct BoxMullerX8Stream {
         const __m256d ur_a = _mm256_sub_pd(one, zorro::detail::u64_to_uniform01_avx2(u2a));
         const __m256d ur_b = _mm256_sub_pd(one, zorro::detail::u64_to_uniform01_avx2(u2b));
         if (mode == Mode::fastlog) {
-            radius_a = _mm256_sqrt_pd(_mm256_mul_pd(_mm256_set1_pd(2.0), fast_neglog01_avx2(ur_a)));
-            radius_b = _mm256_sqrt_pd(_mm256_mul_pd(_mm256_set1_pd(2.0), fast_neglog01_avx2(ur_b)));
+            radius_a = _mm256_sqrt_pd(_mm256_mul_pd(
+                _mm256_set1_pd(2.0), zorro::detail::fast_neglog01_avx2(ur_a)));
+            radius_b = _mm256_sqrt_pd(_mm256_mul_pd(
+                _mm256_set1_pd(2.0), zorro::detail::fast_neglog01_avx2(ur_b)));
         } else if (mode == Mode::fullapprox) {
-            radius_a = _mm256_sqrt_pd(fast_neglog01_avx2(ur_a));
-            radius_b = _mm256_sqrt_pd(fast_neglog01_avx2(ur_b));
+            radius_a = _mm256_sqrt_pd(zorro::detail::fast_neglog01_avx2(ur_a));
+            radius_b = _mm256_sqrt_pd(zorro::detail::fast_neglog01_avx2(ur_b));
         } else if (mode == Mode::approxsincos) {
             radius_a = _mm256_sqrt_pd(_mm256_mul_pd(_mm256_set1_pd(-1.0), _ZGVdN4v_log(ur_a)));
             radius_b = _mm256_sqrt_pd(_mm256_mul_pd(_mm256_set1_pd(-1.0), _ZGVdN4v_log(ur_b)));

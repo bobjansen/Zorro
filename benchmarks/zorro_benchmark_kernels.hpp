@@ -46,6 +46,8 @@ void fill_xoshiro256pp_x8_exponential_naive(std::uint64_t seed, double* out,
                                              std::size_t count) noexcept;
 void fill_xoshiro256pp_x8_exponential_avx2(std::uint64_t seed, double* out,
                                             std::size_t count) noexcept;
+void fill_xoshiro256pp_x8_exponential_avx2_fastlog(std::uint64_t seed, double* out,
+                                                    std::size_t count) noexcept;
 void fill_xoshiro256pp_x8_bernoulli_naive(std::uint64_t seed, double p,
                                            double* out,
                                            std::size_t count) noexcept;
