@@ -125,3 +125,22 @@ for COMPILER in "$GCC" "$CLANG"; do
         echo ""
     done
 done
+
+# ── Transform quality tests ──────────────────────────────────────────────────
+
+for COMPILER in "$GCC" "$CLANG"; do
+    CTAG="${COMPILER%%-*}"
+    for SIMD in "${SIMD_ORDER[@]}"; do
+        DIR="build-${CTAG}-${SIMD}"
+        [[ -d "$DIR" ]] || continue
+
+        echo "=== TESTS ($($COMPILER --version | head -1)) SIMD=$SIMD ==="
+        if [[ "$SIMD" == "no-avx2" || "$SIMD" == "no-avx" ]]; then
+            echo "Skipping normal/exponential transform tests: AVX2 disabled"
+        else
+            ctest --test-dir "$DIR" --output-on-failure \
+                -R 'normal_transform_tests|exponential_transform_tests'
+        fi
+        echo ""
+    done
+done
