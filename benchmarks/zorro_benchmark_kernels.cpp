@@ -178,10 +178,124 @@ inline auto u64_to_uniform01_52_avx2(__m256i bits) noexcept -> __m256d {
     return _mm256_sub_pd(one_to_two, one);
 }
 
+inline auto floatbitmask64_avx2(__m256i bits) noexcept -> __m256d {
+    const __m256i exponent = _mm256_set1_epi64x(0x3ff0000000000000ULL);
+    const __m256i mantissa = _mm256_and_si256(
+        bits, _mm256_set1_epi64x(static_cast<std::int64_t>(0x000fffffffffffffULL)));
+    return _mm256_castsi256_pd(_mm256_or_si256(mantissa, exponent));
+}
+
 inline auto u64_to_pm1_52_avx2(__m256i bits) noexcept -> __m256d {
     const __m256d one = _mm256_set1_pd(1.0);
     const __m256d two = _mm256_set1_pd(2.0);
     return _mm256_sub_pd(_mm256_mul_pd(u64_to_uniform01_52_avx2(bits), two), one);
+}
+
+inline auto approx_sin8_avx2(__m256d x) noexcept -> __m256d {
+    const __m256d c0 = _mm256_set1_pd(2.2214414690791831);
+    const __m256d c1 = _mm256_set1_pd(-0.9135311874994298);
+    const __m256d c2 = _mm256_set1_pd(0.11270239285845876);
+    const __m256d c3 = _mm256_set1_pd(-0.006621000193853499);
+    const __m256d c4 = _mm256_set1_pd(0.00022689809942335572);
+    const __m256d c5 = _mm256_set1_pd(-5.089532691384022e-06);
+    const __m256d c6 = _mm256_set1_pd(8.049906344315649e-08);
+    const __m256d c7 = _mm256_set1_pd(-9.453796623737637e-10);
+    const __m256d c8 = _mm256_set1_pd(8.320735422342538e-12);
+    const __m256d x2 = _mm256_mul_pd(x, x);
+
+    __m256d p = c8;
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c7);
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c6);
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c5);
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c4);
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c3);
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c2);
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c1);
+    p = _mm256_add_pd(_mm256_mul_pd(p, x2), c0);
+    return _mm256_mul_pd(p, x);
+}
+
+inline auto apply_sign_from_bits_avx2(__m256d magnitude, __m256i sign_source_bits) noexcept
+    -> __m256d {
+    const __m256i sign_mask = _mm256_set1_epi64x(
+        static_cast<std::int64_t>(0x8000000000000000ULL));
+    return _mm256_castsi256_pd(
+        _mm256_xor_si256(_mm256_castpd_si256(magnitude),
+                         _mm256_and_si256(sign_source_bits, sign_mask)));
+}
+
+inline void randsincos_approx_avx2(__m256i u, __m256d& s, __m256d& c) noexcept {
+    const __m256d r = floatbitmask64_avx2(u);
+    const __m256d one_open = _mm256_set1_pd(0.9999999999999999);
+    const __m256d sub_one_open = _mm256_set1_pd(1.9999999999999998);
+    const __m256d sininput = _mm256_sub_pd(r, one_open);
+    const __m256d cosinput =
+        _mm256_sub_pd(sub_one_open, _mm256_mul_pd(one_open, r));
+
+    s = apply_sign_from_bits_avx2(approx_sin8_avx2(sininput), u);
+    c = apply_sign_from_bits_avx2(approx_sin8_avx2(cosinput),
+                                  _mm256_slli_epi64(u, 1));
+}
+
+// Julia's VectorizedRNG uses a tailored approximation for -log(u) in its
+// Box-Muller radius. Porting the exact SIMD machinery would take more work
+// than is useful for a benchmark kernel, but we can reuse the core idea:
+// normalize u into mantissa/exponent form and approximate log around 4/3,
+// where the transformed mantissa stays inside a compact interval.
+inline auto log2_3q_avx2(__m256d v, __m256d e) noexcept -> __m256d {
+    const __m256d c0 = _mm256_set1_pd(0.22119417504560815);
+    const __m256d c1 = _mm256_set1_pd(0.22007686931522777);
+    const __m256d c2 = _mm256_set1_pd(0.26237080574885147);
+    const __m256d c3 = _mm256_set1_pd(0.32059774779444955);
+    const __m256d c4 = _mm256_set1_pd(0.41219859454853247);
+    const __m256d c5 = _mm256_set1_pd(0.5770780162997059);
+    const __m256d c6 = _mm256_set1_pd(0.9617966939260809);
+    const __m256d scale = _mm256_set1_pd(2.8853900817779268);
+
+    const __m256d m1 = _mm256_mul_pd(v, v);
+    const __m256d fma1 = _mm256_add_pd(_mm256_mul_pd(m1, c0), c1);
+    const __m256d fma2 = _mm256_add_pd(_mm256_mul_pd(fma1, m1), c2);
+    const __m256d fma3 = _mm256_add_pd(_mm256_mul_pd(fma2, m1), c3);
+    const __m256d fma4 = _mm256_add_pd(_mm256_mul_pd(fma3, m1), c4);
+    const __m256d fma5 = _mm256_add_pd(_mm256_mul_pd(fma4, m1), c5);
+    const __m256d fma6 = _mm256_add_pd(_mm256_mul_pd(fma5, m1), c6);
+
+    const __m256d m2 = _mm256_mul_pd(v, scale);
+    const __m256d fma7 = _mm256_sub_pd(m2, _mm256_mul_pd(v, scale));
+    const __m256d a1 = _mm256_add_pd(e, m2);
+    const __m256d s1 = _mm256_sub_pd(e, a1);
+    const __m256d a2 = _mm256_add_pd(m2, s1);
+    const __m256d a3 = _mm256_add_pd(fma7, a2);
+    const __m256d m3 = _mm256_mul_pd(v, m1);
+    const __m256d a4 = _mm256_add_pd(a1, a3);
+    return _mm256_add_pd(_mm256_mul_pd(fma6, m3), a4);
+}
+
+inline auto fast_neglog01_avx2(__m256d u) noexcept -> __m256d {
+    const __m256i bits = _mm256_castpd_si256(u);
+    const __m256i exponent_mask = _mm256_set1_epi64x(0x7ff0000000000000ULL);
+    const __m256i mantissa_mask = _mm256_set1_epi64x(0x000fffffffffffffULL);
+    const __m256i exponent_bits = _mm256_set1_epi64x(0x3ff0000000000000ULL);
+    const __m256d four_thirds = _mm256_set1_pd(1.3333333333333333);
+    const __m256d neg_ln2 = _mm256_set1_pd(-0.6931471805599453);
+
+    alignas(32) std::uint64_t exp_words[4];
+    alignas(32) double exp_doubles[4];
+    _mm256_store_si256(reinterpret_cast<__m256i*>(exp_words),
+                       _mm256_srli_epi64(_mm256_and_si256(bits, exponent_mask), 52));
+    for (int lane = 0; lane < 4; ++lane) {
+        exp_doubles[lane] =
+            static_cast<double>(static_cast<std::int64_t>(exp_words[lane]) - 1023) +
+            0.4150374992788438;
+    }
+
+    const __m256d mantissa = _mm256_castsi256_pd(
+        _mm256_or_si256(_mm256_and_si256(bits, mantissa_mask), exponent_bits));
+    const __m256d v = _mm256_div_pd(_mm256_sub_pd(mantissa, four_thirds),
+                                    _mm256_add_pd(mantissa, four_thirds));
+    const __m256d log2_u = log2_3q_avx2(v, _mm256_load_pd(exp_doubles));
+    const __m256d neglog_u = _mm256_mul_pd(neg_ln2, log2_u);
+    return _mm256_max_pd(neglog_u, _mm256_setzero_pd());
 }
 
 inline void seed_x4(std::uint64_t seed, std::uint64_t (&s0)[4],
@@ -1126,6 +1240,238 @@ void fill_xoshiro256pp_x8_normal_box_muller_avx2(std::uint64_t seed, double* out
     }
 #else
     fill_xoshiro256pp_x4_normal_polar_avx2(seed, out, count);
+#endif
+}
+
+void fill_xoshiro256pp_x8_normal_box_muller_avx2_fastlog(std::uint64_t seed, double* out,
+                                                           std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const __m256d one = _mm256_set1_pd(1.0);
+    const __m256d pos2 = _mm256_set1_pd(2.0);
+    const __m256d two_pi =
+        _mm256_set1_pd(6.2831853071795864769252867665590058);
+
+    std::size_t i = 0;
+    while (i + 16 <= count) {
+        const __m256d ur_a =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        const __m256d ut_a =
+            u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        const __m256d ur_b =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3)));
+        const __m256d ut_b =
+            u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+
+        // This variant keeps the angle exact so the comparison isolates the
+        // approximated radius, which is where normal-tail bias would show up first.
+        const __m256d radius_a =
+            _mm256_sqrt_pd(_mm256_mul_pd(pos2, fast_neglog01_avx2(ur_a)));
+        const __m256d radius_b =
+            _mm256_sqrt_pd(_mm256_mul_pd(pos2, fast_neglog01_avx2(ur_b)));
+        const __m256d theta_a = _mm256_mul_pd(two_pi, ut_a);
+        const __m256d theta_b = _mm256_mul_pd(two_pi, ut_b);
+
+        const __m256d n1a = _mm256_mul_pd(radius_a, _ZGVdN4v_cos(theta_a));
+        const __m256d n2a = _mm256_mul_pd(radius_a, _ZGVdN4v_sin(theta_a));
+        const __m256d n1b = _mm256_mul_pd(radius_b, _ZGVdN4v_cos(theta_b));
+        const __m256d n2b = _mm256_mul_pd(radius_b, _ZGVdN4v_sin(theta_b));
+
+        _mm256_storeu_pd(out + i,      n1a);
+        _mm256_storeu_pd(out + i + 4,  n2a);
+        _mm256_storeu_pd(out + i + 8,  n1b);
+        _mm256_storeu_pd(out + i + 12, n2b);
+        i += 16;
+    }
+
+    while (i < count) {
+        alignas(32) double n1[4], n2[4];
+
+        const __m256d ur_a =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        const __m256d ut_a =
+            u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        const __m256d radius_a =
+            _mm256_sqrt_pd(_mm256_mul_pd(pos2, fast_neglog01_avx2(ur_a)));
+        const __m256d theta_a = _mm256_mul_pd(two_pi, ut_a);
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_a, _ZGVdN4v_cos(theta_a)));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_a, _ZGVdN4v_sin(theta_a)));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
+        if (i >= count) break;
+
+        const __m256d ur_b =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3)));
+        const __m256d ut_b =
+            u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+        const __m256d radius_b =
+            _mm256_sqrt_pd(_mm256_mul_pd(pos2, fast_neglog01_avx2(ur_b)));
+        const __m256d theta_b = _mm256_mul_pd(two_pi, ut_b);
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_b, _ZGVdN4v_cos(theta_b)));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_b, _ZGVdN4v_sin(theta_b)));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
+    }
+#else
+    fill_xoshiro256pp_x8_normal_box_muller_avx2(seed, out, count);
+#endif
+}
+
+void fill_xoshiro256pp_x8_normal_box_muller_avx2_approxsincos(std::uint64_t seed, double* out,
+                                                                std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const __m256d one = _mm256_set1_pd(1.0);
+
+    std::size_t i = 0;
+    while (i + 16 <= count) {
+        const __m256i u1a = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i u2a = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i u1b = next_x4_avx2(b0, b1, b2, b3);
+        const __m256i u2b = next_x4_avx2(b0, b1, b2, b3);
+
+        __m256d s_a, c_a, s_b, c_b;
+        randsincos_approx_avx2(u1a, s_a, c_a);
+        randsincos_approx_avx2(u1b, s_b, c_b);
+
+        const __m256d ur_a = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2a));
+        const __m256d ur_b = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2b));
+        const __m256d radius_a = _mm256_sqrt_pd(_mm256_mul_pd(
+            _mm256_set1_pd(-1.0), _ZGVdN4v_log(ur_a)));
+        const __m256d radius_b = _mm256_sqrt_pd(_mm256_mul_pd(
+            _mm256_set1_pd(-1.0), _ZGVdN4v_log(ur_b)));
+
+        _mm256_storeu_pd(out + i,      _mm256_mul_pd(radius_a, s_a));
+        _mm256_storeu_pd(out + i + 4,  _mm256_mul_pd(radius_a, c_a));
+        _mm256_storeu_pd(out + i + 8,  _mm256_mul_pd(radius_b, s_b));
+        _mm256_storeu_pd(out + i + 12, _mm256_mul_pd(radius_b, c_b));
+        i += 16;
+    }
+
+    while (i < count) {
+        alignas(32) double n1[4], n2[4];
+        const __m256i u1a = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i u2a = next_x4_avx2(a0, a1, a2, a3);
+        __m256d s_a, c_a;
+        randsincos_approx_avx2(u1a, s_a, c_a);
+        const __m256d ur_a = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2a));
+        const __m256d radius_a = _mm256_sqrt_pd(_mm256_mul_pd(
+            _mm256_set1_pd(-1.0), _ZGVdN4v_log(ur_a)));
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_a, s_a));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_a, c_a));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
+        if (i >= count) break;
+
+        const __m256i u1b = next_x4_avx2(b0, b1, b2, b3);
+        const __m256i u2b = next_x4_avx2(b0, b1, b2, b3);
+        __m256d s_b, c_b;
+        randsincos_approx_avx2(u1b, s_b, c_b);
+        const __m256d ur_b = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2b));
+        const __m256d radius_b = _mm256_sqrt_pd(_mm256_mul_pd(
+            _mm256_set1_pd(-1.0), _ZGVdN4v_log(ur_b)));
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_b, s_b));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_b, c_b));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
+    }
+#else
+    fill_xoshiro256pp_x8_normal_box_muller_avx2(seed, out, count);
+#endif
+}
+
+void fill_xoshiro256pp_x8_normal_box_muller_avx2_fullapprox(std::uint64_t seed, double* out,
+                                                              std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const __m256d one = _mm256_set1_pd(1.0);
+
+    std::size_t i = 0;
+    while (i + 16 <= count) {
+        const __m256i u1a = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i u2a = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i u1b = next_x4_avx2(b0, b1, b2, b3);
+        const __m256i u2b = next_x4_avx2(b0, b1, b2, b3);
+
+        __m256d s_a, c_a, s_b, c_b;
+        randsincos_approx_avx2(u1a, s_a, c_a);
+        randsincos_approx_avx2(u1b, s_b, c_b);
+
+        const __m256d ur_a = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2a));
+        const __m256d ur_b = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2b));
+        const __m256d radius_a = _mm256_sqrt_pd(fast_neglog01_avx2(ur_a));
+        const __m256d radius_b = _mm256_sqrt_pd(fast_neglog01_avx2(ur_b));
+
+        _mm256_storeu_pd(out + i,      _mm256_mul_pd(radius_a, s_a));
+        _mm256_storeu_pd(out + i + 4,  _mm256_mul_pd(radius_a, c_a));
+        _mm256_storeu_pd(out + i + 8,  _mm256_mul_pd(radius_b, s_b));
+        _mm256_storeu_pd(out + i + 12, _mm256_mul_pd(radius_b, c_b));
+        i += 16;
+    }
+
+    while (i < count) {
+        alignas(32) double n1[4], n2[4];
+        const __m256i u1a = next_x4_avx2(a0, a1, a2, a3);
+        const __m256i u2a = next_x4_avx2(a0, a1, a2, a3);
+        __m256d s_a, c_a;
+        randsincos_approx_avx2(u1a, s_a, c_a);
+        const __m256d ur_a = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2a));
+        const __m256d radius_a = _mm256_sqrt_pd(fast_neglog01_avx2(ur_a));
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_a, s_a));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_a, c_a));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
+        if (i >= count) break;
+
+        const __m256i u1b = next_x4_avx2(b0, b1, b2, b3);
+        const __m256i u2b = next_x4_avx2(b0, b1, b2, b3);
+        __m256d s_b, c_b;
+        randsincos_approx_avx2(u1b, s_b, c_b);
+        const __m256d ur_b = _mm256_sub_pd(one, u64_to_uniform01_52_avx2(u2b));
+        const __m256d radius_b = _mm256_sqrt_pd(fast_neglog01_avx2(ur_b));
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_b, s_b));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_b, c_b));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
+    }
+#else
+    fill_xoshiro256pp_x8_normal_box_muller_avx2(seed, out, count);
 #endif
 }
 

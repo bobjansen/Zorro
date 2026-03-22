@@ -34,6 +34,12 @@ void fill_xoshiro256pp_x8_normal_polar_avx2_veclog(std::uint64_t seed, double* o
                                                      std::size_t count) noexcept;
 void fill_xoshiro256pp_x8_normal_box_muller_avx2(std::uint64_t seed, double* out,
                                                   std::size_t count) noexcept;
+void fill_xoshiro256pp_x8_normal_box_muller_avx2_fastlog(std::uint64_t seed, double* out,
+                                                          std::size_t count) noexcept;
+void fill_xoshiro256pp_x8_normal_box_muller_avx2_approxsincos(std::uint64_t seed, double* out,
+                                                               std::size_t count) noexcept;
+void fill_xoshiro256pp_x8_normal_box_muller_avx2_fullapprox(std::uint64_t seed, double* out,
+                                                             std::size_t count) noexcept;
 void fill_xoshiro256pp_x8_normal_vecpolar_avx2(std::uint64_t seed, double* out,
                                                  std::size_t count) noexcept;
 void fill_xoshiro256pp_x8_exponential_naive(std::uint64_t seed, double* out,

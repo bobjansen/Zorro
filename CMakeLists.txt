@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(zorro LANGUAGES CXX)
+enable_testing()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,6 +83,12 @@ add_executable(
 )
 
 add_executable(
+    normal_transform_comparison
+    examples/normal_transform_comparison.cpp
+    benchmarks/zorro_benchmark_kernels.cpp
+)
+
+add_executable(
     quality_tests
     benchmarks/quality_tests.cpp
 )
@@ -89,6 +96,12 @@ add_executable(
 add_executable(
     dieharder_stream
     benchmarks/dieharder_stream.cpp
+)
+
+add_executable(
+    normal_transform_tests
+    tests/normal_transform_tests.cpp
+    benchmarks/zorro_benchmark_kernels.cpp
 )
 
 if(RNG_BENCH_HAS_TESTU01)
@@ -120,6 +133,13 @@ target_include_directories(
 )
 
 target_include_directories(
+    normal_transform_comparison
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_include_directories(
     quality_tests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -128,6 +148,13 @@ target_include_directories(
 
 target_include_directories(
     dieharder_stream
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_include_directories(
+    normal_transform_tests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -161,6 +188,12 @@ target_compile_options(
 )
 
 target_compile_options(
+    normal_transform_comparison
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+)
+
+target_compile_options(
     quality_tests
     PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
@@ -168,6 +201,12 @@ target_compile_options(
 
 target_compile_options(
     dieharder_stream
+    PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
+)
+
+target_compile_options(
+    normal_transform_tests
     PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-O3;-Wall;-Wextra;-Wpedantic>
 )
@@ -181,8 +220,33 @@ if(RNG_BENCH_HAS_TESTU01)
 endif()
 
 # libmvec provides vectorized math functions (_ZGVdN4v_log etc.)
+target_compile_definitions(
+    benchmark_distributions
+    PRIVATE
+        ZORRO_USE_LIBMVEC
+)
+
+target_compile_definitions(
+    normal_transform_comparison
+    PRIVATE
+        ZORRO_USE_LIBMVEC
+)
+
+target_compile_definitions(
+    normal_transform_tests
+    PRIVATE
+        ZORRO_USE_LIBMVEC
+)
+
 target_link_libraries(
     benchmark_distributions
+    PRIVATE
+        m
+        mvec
+)
+
+target_link_libraries(
+    normal_transform_comparison
     PRIVATE
         m
         mvec
@@ -211,6 +275,13 @@ target_link_libraries(
 
 target_link_libraries(
     dieharder_stream
+    PRIVATE
+        m
+        mvec
+)
+
+target_link_libraries(
+    normal_transform_tests
     PRIVATE
         m
         mvec
@@ -248,7 +319,19 @@ if(RNG_BENCH_ENABLE_AVX512)
     )
 
     target_compile_options(
+        normal_transform_comparison
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+
+    target_compile_options(
         quality_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
+    )
+
+    target_compile_options(
+        normal_transform_tests
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx512f;-mavx512vl;-mavx512dq>
     )
@@ -288,7 +371,19 @@ if(RNG_BENCH_ENABLE_NATIVE)
     )
 
     target_compile_options(
+        normal_transform_comparison
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+    )
+
+    target_compile_options(
         quality_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
+    )
+
+    target_compile_options(
+        normal_transform_tests
         PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:-march=native;-mtune=native>
     )
@@ -316,7 +411,9 @@ if(RNG_BENCH_MARCH_FLAGS)
     target_compile_options(benchmark_distributions PRIVATE ${_march_flags})
     target_compile_options(high_dimensional_random_variables PRIVATE ${_march_flags})
     target_compile_options(importance_sampling PRIVATE ${_march_flags})
+    target_compile_options(normal_transform_comparison PRIVATE ${_march_flags})
     target_compile_options(quality_tests PRIVATE ${_march_flags})
+    target_compile_options(normal_transform_tests PRIVATE ${_march_flags})
     target_compile_options(dieharder_stream PRIVATE ${_march_flags})
     if(RNG_BENCH_HAS_TESTU01)
         target_compile_options(testu01_runner PRIVATE ${_march_flags})
@@ -349,6 +446,22 @@ if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)
             $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
     )
 endif()
+
+if(RNG_BENCH_HAS_MAVX2)
+    target_compile_options(
+        normal_transform_comparison
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
+    )
+
+    target_compile_options(
+        normal_transform_tests
+        PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
+    )
+endif()
+
+add_test(NAME normal_transform_tests COMMAND normal_transform_tests)
 
 if(RNG_BENCH_ENABLE_AVX512)
     add_executable(

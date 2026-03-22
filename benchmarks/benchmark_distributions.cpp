@@ -211,6 +211,20 @@ void fill_normals_xoshiro_x8_avx2_box_muller(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x8_normal_box_muller_avx2(kSeed, out, count);
 }
 
+void fill_normals_xoshiro_x8_avx2_box_muller_fastlog(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_normal_box_muller_avx2_fastlog(kSeed, out, count);
+}
+
+void fill_normals_xoshiro_x8_avx2_box_muller_approxsincos(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_normal_box_muller_avx2_approxsincos(
+        kSeed, out, count);
+}
+
+void fill_normals_xoshiro_x8_avx2_box_muller_fullapprox(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_normal_box_muller_avx2_fullapprox(
+        kSeed, out, count);
+}
+
 void fill_normals_xoshiro_x8_avx2_vecpolar(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x8_normal_vecpolar_avx2(kSeed, out, count);
 }
@@ -578,6 +592,14 @@ int main() {
                                            fill_normals_xoshiro_x8_avx2_veclog));
     normal_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 + box-muller",
                                            fill_normals_xoshiro_x8_avx2_box_muller));
+    normal_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 + box-muller fastlog",
+                                           fill_normals_xoshiro_x8_avx2_box_muller_fastlog));
+    normal_results.push_back(
+        run_benchmark("xoshiro256++ x8 AVX2 + box-muller approxsincos",
+                      fill_normals_xoshiro_x8_avx2_box_muller_approxsincos));
+    normal_results.push_back(
+        run_benchmark("xoshiro256++ x8 AVX2 + box-muller fullapprox",
+                      fill_normals_xoshiro_x8_avx2_box_muller_fullapprox));
     normal_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 + vecpolar",
                                            fill_normals_xoshiro_x8_avx2_vecpolar));
 #endif
