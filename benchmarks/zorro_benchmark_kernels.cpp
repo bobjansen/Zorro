@@ -8,6 +8,8 @@
 #include <immintrin.h>
 // glibc libmvec: AVX2 4-wide double log
 extern "C" __m256d _ZGVdN4v_log(__m256d) noexcept;
+extern "C" __m256d _ZGVdN4v_sin(__m256d) noexcept;
+extern "C" __m256d _ZGVdN4v_cos(__m256d) noexcept;
 #endif
 #ifdef __AVX512F__
 #include <immintrin.h>
@@ -1033,6 +1035,94 @@ void fill_xoshiro256pp_x8_normal_vecpolar_avx2(std::uint64_t seed, double* out,
                 }
             }
         }
+    }
+#else
+    fill_xoshiro256pp_x4_normal_polar_avx2(seed, out, count);
+#endif
+}
+
+// ─── Idea 8: x8 AVX2 Box-Muller with libmvec trig/log ───────────────────────
+// Regular SIMD work per sample: no rejection, no lane compaction, and no
+// masked scatter. This isolates whether a smooth transform beats polar's
+// accept/reject machinery on this machine.
+void fill_xoshiro256pp_x8_normal_box_muller_avx2(std::uint64_t seed, double* out,
+                                                   std::size_t count) noexcept {
+#ifdef __AVX2__
+    alignas(32) std::uint64_t sa0[4], sa1[4], sa2[4], sa3[4];
+    alignas(32) std::uint64_t sb0[4], sb1[4], sb2[4], sb3[4];
+    seed_x8(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m256i a0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa0));
+    __m256i a1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa1));
+    __m256i a2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa2));
+    __m256i a3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sa3));
+    __m256i b0 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb0));
+    __m256i b1 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb1));
+    __m256i b2 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb2));
+    __m256i b3 = _mm256_load_si256(reinterpret_cast<const __m256i*>(sb3));
+
+    const __m256d one = _mm256_set1_pd(1.0);
+    const __m256d neg2 = _mm256_set1_pd(-2.0);
+    const __m256d two_pi =
+        _mm256_set1_pd(6.2831853071795864769252867665590058);
+
+    std::size_t i = 0;
+    while (i + 16 <= count) {
+        const __m256d ur_a =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        const __m256d ut_a =
+            u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        const __m256d ur_b =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3)));
+        const __m256d ut_b =
+            u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+
+        const __m256d radius_a =
+            _mm256_sqrt_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(ur_a)));
+        const __m256d radius_b =
+            _mm256_sqrt_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(ur_b)));
+        const __m256d theta_a = _mm256_mul_pd(two_pi, ut_a);
+        const __m256d theta_b = _mm256_mul_pd(two_pi, ut_b);
+
+        const __m256d n1a = _mm256_mul_pd(radius_a, _ZGVdN4v_cos(theta_a));
+        const __m256d n2a = _mm256_mul_pd(radius_a, _ZGVdN4v_sin(theta_a));
+        const __m256d n1b = _mm256_mul_pd(radius_b, _ZGVdN4v_cos(theta_b));
+        const __m256d n2b = _mm256_mul_pd(radius_b, _ZGVdN4v_sin(theta_b));
+
+        _mm256_storeu_pd(out + i,      n1a);
+        _mm256_storeu_pd(out + i + 4,  n2a);
+        _mm256_storeu_pd(out + i + 8,  n1b);
+        _mm256_storeu_pd(out + i + 12, n2b);
+        i += 16;
+    }
+
+    while (i < count) {
+        alignas(32) double n1[4], n2[4];
+
+        const __m256d ur_a =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3)));
+        const __m256d ut_a =
+            u64_to_uniform01_52_avx2(next_x4_avx2(a0, a1, a2, a3));
+        const __m256d radius_a =
+            _mm256_sqrt_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(ur_a)));
+        const __m256d theta_a = _mm256_mul_pd(two_pi, ut_a);
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_a, _ZGVdN4v_cos(theta_a)));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_a, _ZGVdN4v_sin(theta_a)));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
+        if (i >= count) break;
+
+        const __m256d ur_b =
+            _mm256_sub_pd(one, u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3)));
+        const __m256d ut_b =
+            u64_to_uniform01_52_avx2(next_x4_avx2(b0, b1, b2, b3));
+        const __m256d radius_b =
+            _mm256_sqrt_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(ur_b)));
+        const __m256d theta_b = _mm256_mul_pd(two_pi, ut_b);
+        _mm256_store_pd(n1, _mm256_mul_pd(radius_b, _ZGVdN4v_cos(theta_b)));
+        _mm256_store_pd(n2, _mm256_mul_pd(radius_b, _ZGVdN4v_sin(theta_b)));
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 4 && i < count; ++lane) out[i++] = n2[lane];
     }
 #else
     fill_xoshiro256pp_x4_normal_polar_avx2(seed, out, count);

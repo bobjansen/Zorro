@@ -21,7 +21,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using Milliseconds = std::chrono::duration<double, std::milli>;
 
-constexpr std::size_t kSampleCount = 1u << 24;
+constexpr std::size_t kSampleCount = 1u << 20;
 constexpr std::uint64_t kSeed = 0x123456789abcdef0ULL;
 constexpr int kWarmupIterations = 3;
 constexpr int kMeasureIterations = 21;
@@ -205,6 +205,10 @@ void fill_normals_xoshiro_x8_avx2_batched(double* out, std::size_t count) {
 
 void fill_normals_xoshiro_x8_avx2_veclog(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x8_normal_polar_avx2_veclog(kSeed, out, count);
+}
+
+void fill_normals_xoshiro_x8_avx2_box_muller(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x8_normal_box_muller_avx2(kSeed, out, count);
 }
 
 void fill_normals_xoshiro_x8_avx2_vecpolar(double* out, std::size_t count) {
@@ -541,7 +545,19 @@ int main() {
 #endif
 
     std::vector<BenchmarkResult> normal_results;
-    normal_results.reserve(8);
+    normal_results.reserve(16);
+    zorro::Rng persistent_normal_rng(kSeed);
+    normal_results.push_back(run_benchmark(
+        "zorro::Rng fill_normal persistent",
+        [&](double* out, std::size_t count) {
+            persistent_normal_rng.fill_normal(out, count);
+        }));
+    normal_results.push_back(run_benchmark(
+        "zorro::Rng fill_normal fresh",
+        [](double* out, std::size_t count) {
+            zorro::Rng rng(kSeed);
+            rng.fill_normal(out, count);
+        }));
     normal_results.push_back(
         run_benchmark("xoshiro256++ scalar + polar",
                       fill_normals_xoshiro_scalar_polar));
@@ -560,6 +576,8 @@ int main() {
                                            fill_normals_xoshiro_x8_avx2_batched));
     normal_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 + veclog batch",
                                            fill_normals_xoshiro_x8_avx2_veclog));
+    normal_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 + box-muller",
+                                           fill_normals_xoshiro_x8_avx2_box_muller));
     normal_results.push_back(run_benchmark("xoshiro256++ x8 AVX2 + vecpolar",
                                            fill_normals_xoshiro_x8_avx2_vecpolar));
 #endif
