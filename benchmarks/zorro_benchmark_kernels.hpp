@@ -111,6 +111,8 @@ void fill_xoshiro256pp_x8_uniform01_avx512(std::uint64_t seed, double* out,
                                             std::size_t count) noexcept;
 void fill_xoshiro256pp_x16_uniform01_avx512(std::uint64_t seed, double* out,
                                              std::size_t count) noexcept;
+void fill_xoshiro256pp_x16_normal_box_muller_avx512_fullapprox(std::uint64_t seed, double* out,
+                                                                std::size_t count) noexcept;
 void fill_xoshiro256pp_x16_normal_vecpolar_avx512(std::uint64_t seed, double* out,
                                                    std::size_t count) noexcept;
 void fill_xoshiro256pp_x16_exponential_avx512(std::uint64_t seed, double* out,

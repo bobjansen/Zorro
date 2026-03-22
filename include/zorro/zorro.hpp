@@ -342,19 +342,32 @@ inline auto log2_3q_avx2(__m256d v, __m256d e) noexcept -> __m256d {
   const __m256d scale = _mm256_set1_pd(2.8853900817779268);
 
   const __m256d m1 = _mm256_mul_pd(v, v);
+#ifdef __FMA__
+  const __m256d fma1 = _mm256_fmadd_pd(m1, c0, c1);
+  const __m256d fma2 = _mm256_fmadd_pd(fma1, m1, c2);
+  const __m256d fma3 = _mm256_fmadd_pd(fma2, m1, c3);
+  const __m256d fma4 = _mm256_fmadd_pd(fma3, m1, c4);
+  const __m256d fma5 = _mm256_fmadd_pd(fma4, m1, c5);
+  const __m256d fma6 = _mm256_fmadd_pd(fma5, m1, c6);
+#else
   const __m256d fma1 = _mm256_add_pd(_mm256_mul_pd(m1, c0), c1);
   const __m256d fma2 = _mm256_add_pd(_mm256_mul_pd(fma1, m1), c2);
   const __m256d fma3 = _mm256_add_pd(_mm256_mul_pd(fma2, m1), c3);
   const __m256d fma4 = _mm256_add_pd(_mm256_mul_pd(fma3, m1), c4);
   const __m256d fma5 = _mm256_add_pd(_mm256_mul_pd(fma4, m1), c5);
   const __m256d fma6 = _mm256_add_pd(_mm256_mul_pd(fma5, m1), c6);
+#endif
 
   const __m256d m2 = _mm256_mul_pd(v, scale);
   const __m256d a1 = _mm256_add_pd(e, m2);
   const __m256d s1 = _mm256_sub_pd(e, a1);
   const __m256d a2 = _mm256_add_pd(m2, s1);
   const __m256d m3 = _mm256_mul_pd(v, m1);
+#ifdef __FMA__
+  return _mm256_fmadd_pd(fma6, m3, _mm256_add_pd(a1, a2));
+#else
   return _mm256_add_pd(_mm256_mul_pd(fma6, m3), _mm256_add_pd(a1, a2));
+#endif
 }
 
 inline auto exponent_words_to_log2_bias_avx2(__m256i exponent_words) noexcept

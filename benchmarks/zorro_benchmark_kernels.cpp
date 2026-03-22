@@ -317,6 +317,136 @@ inline auto u64_to_pm1_52_avx512(__m512i bits) noexcept -> __m512d {
     return _mm512_sub_pd(_mm512_mul_pd(u64_to_uniform01_52_avx512(bits), two), one);
 }
 
+inline auto floatbitmask64_avx512(__m512i bits) noexcept -> __m512d {
+    const __m512i exponent =
+        _mm512_set1_epi64(static_cast<std::int64_t>(0x3ff0000000000000ULL));
+    const __m512i mantissa = _mm512_and_si512(
+        bits, _mm512_set1_epi64(static_cast<std::int64_t>(0x000fffffffffffffULL)));
+    return _mm512_castsi512_pd(_mm512_or_si512(mantissa, exponent));
+}
+
+inline auto approx_sin8_avx512(__m512d x) noexcept -> __m512d {
+    const __m512d c0 = _mm512_set1_pd(2.2214414690791831);
+    const __m512d c1 = _mm512_set1_pd(-0.9135311874994298);
+    const __m512d c2 = _mm512_set1_pd(0.11270239285845876);
+    const __m512d c3 = _mm512_set1_pd(-0.006621000193853499);
+    const __m512d c4 = _mm512_set1_pd(0.00022689809942335572);
+    const __m512d c5 = _mm512_set1_pd(-5.089532691384022e-06);
+    const __m512d c6 = _mm512_set1_pd(8.049906344315649e-08);
+    const __m512d c7 = _mm512_set1_pd(-9.453796623737637e-10);
+    const __m512d c8 = _mm512_set1_pd(8.320735422342538e-12);
+    const __m512d x2 = _mm512_mul_pd(x, x);
+
+#ifdef __FMA__
+    __m512d p = c8;
+    p = _mm512_fmadd_pd(p, x2, c7);
+    p = _mm512_fmadd_pd(p, x2, c6);
+    p = _mm512_fmadd_pd(p, x2, c5);
+    p = _mm512_fmadd_pd(p, x2, c4);
+    p = _mm512_fmadd_pd(p, x2, c3);
+    p = _mm512_fmadd_pd(p, x2, c2);
+    p = _mm512_fmadd_pd(p, x2, c1);
+    p = _mm512_fmadd_pd(p, x2, c0);
+#else
+    __m512d p = c8;
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c7);
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c6);
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c5);
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c4);
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c3);
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c2);
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c1);
+    p = _mm512_add_pd(_mm512_mul_pd(p, x2), c0);
+#endif
+    return _mm512_mul_pd(p, x);
+}
+
+inline auto apply_sign_from_bits_avx512(__m512d magnitude, __m512i sign_source_bits) noexcept
+    -> __m512d {
+    const __m512i sign_mask =
+        _mm512_set1_epi64(static_cast<std::int64_t>(0x8000000000000000ULL));
+    return _mm512_castsi512_pd(
+        _mm512_xor_si512(_mm512_castpd_si512(magnitude),
+                         _mm512_and_si512(sign_source_bits, sign_mask)));
+}
+
+inline void randsincos_approx_avx512(__m512i u, __m512d& s, __m512d& c) noexcept {
+    const __m512d r = floatbitmask64_avx512(u);
+    const __m512d one_open = _mm512_set1_pd(0.9999999999999999);
+    const __m512d sub_one_open = _mm512_set1_pd(1.9999999999999998);
+    const __m512d sininput = _mm512_sub_pd(r, one_open);
+    const __m512d cosinput =
+        _mm512_sub_pd(sub_one_open, _mm512_mul_pd(one_open, r));
+
+    s = apply_sign_from_bits_avx512(approx_sin8_avx512(sininput), u);
+    c = apply_sign_from_bits_avx512(approx_sin8_avx512(cosinput),
+                                    _mm512_slli_epi64(u, 1));
+}
+
+inline auto log2_3q_avx512(__m512d v, __m512d e) noexcept -> __m512d {
+    const __m512d c0 = _mm512_set1_pd(0.22119417504560815);
+    const __m512d c1 = _mm512_set1_pd(0.22007686931522777);
+    const __m512d c2 = _mm512_set1_pd(0.26237080574885147);
+    const __m512d c3 = _mm512_set1_pd(0.32059774779444955);
+    const __m512d c4 = _mm512_set1_pd(0.41219859454853247);
+    const __m512d c5 = _mm512_set1_pd(0.5770780162997059);
+    const __m512d c6 = _mm512_set1_pd(0.9617966939260809);
+    const __m512d scale = _mm512_set1_pd(2.8853900817779268);
+
+    const __m512d m1 = _mm512_mul_pd(v, v);
+#ifdef __FMA__
+    const __m512d fma1 = _mm512_fmadd_pd(m1, c0, c1);
+    const __m512d fma2 = _mm512_fmadd_pd(fma1, m1, c2);
+    const __m512d fma3 = _mm512_fmadd_pd(fma2, m1, c3);
+    const __m512d fma4 = _mm512_fmadd_pd(fma3, m1, c4);
+    const __m512d fma5 = _mm512_fmadd_pd(fma4, m1, c5);
+    const __m512d fma6 = _mm512_fmadd_pd(fma5, m1, c6);
+#else
+    const __m512d fma1 = _mm512_add_pd(_mm512_mul_pd(m1, c0), c1);
+    const __m512d fma2 = _mm512_add_pd(_mm512_mul_pd(fma1, m1), c2);
+    const __m512d fma3 = _mm512_add_pd(_mm512_mul_pd(fma2, m1), c3);
+    const __m512d fma4 = _mm512_add_pd(_mm512_mul_pd(fma3, m1), c4);
+    const __m512d fma5 = _mm512_add_pd(_mm512_mul_pd(fma4, m1), c5);
+    const __m512d fma6 = _mm512_add_pd(_mm512_mul_pd(fma5, m1), c6);
+#endif
+
+    const __m512d m2 = _mm512_mul_pd(v, scale);
+    const __m512d a1 = _mm512_add_pd(e, m2);
+    const __m512d s1 = _mm512_sub_pd(e, a1);
+    const __m512d a2 = _mm512_add_pd(m2, s1);
+    const __m512d m3 = _mm512_mul_pd(v, m1);
+#ifdef __FMA__
+    return _mm512_fmadd_pd(fma6, m3, _mm512_add_pd(a1, a2));
+#else
+    return _mm512_add_pd(_mm512_mul_pd(fma6, m3), _mm512_add_pd(a1, a2));
+#endif
+}
+
+inline auto fast_neglog01_avx512(__m512d u) noexcept -> __m512d {
+    const __m512i bits = _mm512_castpd_si512(u);
+    const __m512i exponent_mask =
+        _mm512_set1_epi64(static_cast<std::int64_t>(0x7ff0000000000000ULL));
+    const __m512i mantissa_mask =
+        _mm512_set1_epi64(static_cast<std::int64_t>(0x000fffffffffffffULL));
+    const __m512i exponent_bits =
+        _mm512_set1_epi64(static_cast<std::int64_t>(0x3ff0000000000000ULL));
+    const __m512d four_thirds = _mm512_set1_pd(1.3333333333333333);
+    const __m512d neg_ln2 = _mm512_set1_pd(-0.6931471805599453);
+    const __m512i exponent_words =
+        _mm512_srli_epi64(_mm512_and_si512(bits, exponent_mask), 52);
+
+    const __m512d mantissa = _mm512_castsi512_pd(
+        _mm512_or_si512(_mm512_and_si512(bits, mantissa_mask), exponent_bits));
+    const __m512d v = _mm512_div_pd(_mm512_sub_pd(mantissa, four_thirds),
+                                    _mm512_add_pd(mantissa, four_thirds));
+    const __m512d exponent = _mm512_add_pd(
+        _mm512_cvtepi64_pd(exponent_words),
+        _mm512_set1_pd(-1023.0 + 0.4150374992788438));
+    const __m512d log2_u = log2_3q_avx512(v, exponent);
+    const __m512d neglog_u = _mm512_mul_pd(neg_ln2, log2_u);
+    return _mm512_max_pd(neglog_u, _mm512_setzero_pd());
+}
+
 // Seed one group of 8 independent lanes into 64-byte-aligned SoA arrays.
 inline void seed_x8_avx512(std::uint64_t seed,
                             std::uint64_t (&s0)[8], std::uint64_t (&s1)[8],
@@ -2806,6 +2936,82 @@ void fill_xoshiro256pp_x16_normal_vecpolar_avx512(std::uint64_t seed, double* ou
     }
 #else
     fill_xoshiro256pp_x8_normal_vecpolar_avx2(seed, out, count);
+#endif
+}
+
+void fill_xoshiro256pp_x16_normal_box_muller_avx512_fullapprox(std::uint64_t seed, double* out,
+                                                                std::size_t count) noexcept {
+#ifdef __AVX512F__
+    if (cpu_is_amd()) {
+        fill_xoshiro256pp_x8_normal_box_muller_avx2_fullapprox(seed, out, count);
+        return;
+    }
+
+    alignas(64) std::uint64_t sa0[8], sa1[8], sa2[8], sa3[8];
+    alignas(64) std::uint64_t sb0[8], sb1[8], sb2[8], sb3[8];
+    seed_x16_avx512(seed, sa0, sa1, sa2, sa3, sb0, sb1, sb2, sb3);
+
+    __m512i a0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa0));
+    __m512i a1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa1));
+    __m512i a2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa2));
+    __m512i a3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sa3));
+    __m512i b0 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb0));
+    __m512i b1 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb1));
+    __m512i b2 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb2));
+    __m512i b3 = _mm512_load_si512(reinterpret_cast<const __m512i*>(sb3));
+
+    const __m512d one = _mm512_set1_pd(1.0);
+
+    std::size_t i = 0;
+    while (i + 32 <= count) {
+        const __m512i u1a = next_x8_avx512(a0, a1, a2, a3);
+        const __m512i u2a = next_x8_avx512(a0, a1, a2, a3);
+        const __m512i u1b = next_x8_avx512(b0, b1, b2, b3);
+        const __m512i u2b = next_x8_avx512(b0, b1, b2, b3);
+
+        __m512d s_a, c_a, s_b, c_b;
+        randsincos_approx_avx512(u1a, s_a, c_a);
+        randsincos_approx_avx512(u1b, s_b, c_b);
+
+        const __m512d ur_a = _mm512_sub_pd(one, u64_to_uniform01_52_avx512(u2a));
+        const __m512d ur_b = _mm512_sub_pd(one, u64_to_uniform01_52_avx512(u2b));
+        const __m512d radius_a = _mm512_sqrt_pd(fast_neglog01_avx512(ur_a));
+        const __m512d radius_b = _mm512_sqrt_pd(fast_neglog01_avx512(ur_b));
+
+        _mm512_storeu_pd(out + i,      _mm512_mul_pd(radius_a, s_a));
+        _mm512_storeu_pd(out + i + 8,  _mm512_mul_pd(radius_a, c_a));
+        _mm512_storeu_pd(out + i + 16, _mm512_mul_pd(radius_b, s_b));
+        _mm512_storeu_pd(out + i + 24, _mm512_mul_pd(radius_b, c_b));
+        i += 32;
+    }
+
+    while (i < count) {
+        alignas(64) double n1[8], n2[8];
+        const __m512i u1a = next_x8_avx512(a0, a1, a2, a3);
+        const __m512i u2a = next_x8_avx512(a0, a1, a2, a3);
+        __m512d s_a, c_a;
+        randsincos_approx_avx512(u1a, s_a, c_a);
+        const __m512d ur_a = _mm512_sub_pd(one, u64_to_uniform01_52_avx512(u2a));
+        const __m512d radius_a = _mm512_sqrt_pd(fast_neglog01_avx512(ur_a));
+        _mm512_store_pd(n1, _mm512_mul_pd(radius_a, s_a));
+        _mm512_store_pd(n2, _mm512_mul_pd(radius_a, c_a));
+        for (int lane = 0; lane < 8 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 8 && i < count; ++lane) out[i++] = n2[lane];
+        if (i >= count) break;
+
+        const __m512i u1b = next_x8_avx512(b0, b1, b2, b3);
+        const __m512i u2b = next_x8_avx512(b0, b1, b2, b3);
+        __m512d s_b, c_b;
+        randsincos_approx_avx512(u1b, s_b, c_b);
+        const __m512d ur_b = _mm512_sub_pd(one, u64_to_uniform01_52_avx512(u2b));
+        const __m512d radius_b = _mm512_sqrt_pd(fast_neglog01_avx512(ur_b));
+        _mm512_store_pd(n1, _mm512_mul_pd(radius_b, s_b));
+        _mm512_store_pd(n2, _mm512_mul_pd(radius_b, c_b));
+        for (int lane = 0; lane < 8 && i < count; ++lane) out[i++] = n1[lane];
+        for (int lane = 0; lane < 8 && i < count; ++lane) out[i++] = n2[lane];
+    }
+#else
+    fill_xoshiro256pp_x8_normal_box_muller_avx2_fullapprox(seed, out, count);
 #endif
 }
 

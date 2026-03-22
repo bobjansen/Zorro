@@ -465,6 +465,11 @@ void fill_normals_xoshiro_x16_avx512_vecpolar(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x16_normal_vecpolar_avx512(kSeed, out, count);
 }
 
+void fill_normals_xoshiro_x16_avx512_fullapprox(double* out, std::size_t count) {
+    zorro_bench::fill_xoshiro256pp_x16_normal_box_muller_avx512_fullapprox(
+        kSeed, out, count);
+}
+
 void fill_exponential_x16_avx512(double* out, std::size_t count) {
     zorro_bench::fill_xoshiro256pp_x16_exponential_avx512(kSeed, out, count);
 }
@@ -608,6 +613,8 @@ int main() {
                                            fill_normals_xoshiro_x8_avx2_vecpolar));
 #endif
 #ifdef __AVX512F__
+    normal_results.push_back(run_benchmark("xoshiro256++ x16 AVX-512 + box-muller fullapprox",
+                                           fill_normals_xoshiro_x16_avx512_fullapprox));
     normal_results.push_back(run_benchmark("xoshiro256++ x16 AVX-512 + vecpolar",
                                            fill_normals_xoshiro_x16_avx512_vecpolar));
 #endif
