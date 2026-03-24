@@ -8,6 +8,7 @@
 #
 # Usage:
 #   ./bench.sh                                          # defaults: c6i, c7i, c7a
+#   ./bench.sh --latest                                 # latest-gen: c8i, c8a
 #   ./bench.sh --instances c6i.xlarge,c7i.xlarge        # custom instance types
 #   ./bench.sh --keep                                   # don't terminate on completion
 #   ./bench.sh --region us-west-2                       # override region
@@ -27,6 +28,7 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Connect
 
 # Default instance types — all x86-64 with AVX-512
 INSTANCE_TYPES=("c6i.xlarge" "c7i.xlarge" "c7a.xlarge")
+LATEST_TYPES=("c8i.large" "c8a.large")
 KEEP_INSTANCES=false
 REGION_FLAG=()
 
@@ -44,6 +46,7 @@ Usage: bench.sh [OPTIONS]
 
 Options:
   --instances TYPE[,TYPE...]  Comma-separated instance types (default: c6i.xlarge,c7i.xlarge,c7a.xlarge)
+  --latest                    Use latest-gen instances: c8i.large (Granite Rapids), c8a.large (Zen 5 Turin)
   --region REGION             AWS region override
   --keep                      Don't terminate instances after benchmarking
   --help                      Show this help
@@ -52,6 +55,8 @@ Instance type suggestions (x86-64 with AVX-512):
   c6i.xlarge    Intel Ice Lake           (AVX-512F/VL/BW/DQ/VNNI)
   c7i.xlarge    Intel Sapphire Rapids    (AVX-512F/VL/BW/DQ/VNNI/FP16/IFMA/VBMI2)
   c7a.xlarge    AMD EPYC Zen 4           (AVX-512F/VL/BW/DQ/VNNI/VBMI2)
+  c8i.large     Intel Granite Rapids     (AVX-512F/VL/BW/DQ/VNNI/FP16/IFMA/VBMI2)
+  c8a.large     AMD EPYC Zen 5 Turin    (AVX-512F/VL/BW/DQ/VNNI/VBMI2)
   c5.xlarge     Intel Skylake/Cascade    (AVX-512F/VL/BW/DQ)
 
 For AVX2-only comparison:
@@ -59,6 +64,7 @@ For AVX2-only comparison:
 
 Examples:
   ./bench.sh
+  ./bench.sh --latest
   ./bench.sh --instances c6i.xlarge,c7i.xlarge,c7a.xlarge,c5.xlarge
   ./bench.sh --instances c7i.xlarge --region us-east-1 --keep
 EOF
@@ -95,6 +101,7 @@ trap cleanup EXIT INT TERM
 while [[ $# -gt 0 ]]; do
     case $1 in
         --instances) shift; IFS=',' read -ra INSTANCE_TYPES <<< "$1" ;;
+        --latest)    INSTANCE_TYPES=("${LATEST_TYPES[@]}") ;;
         --region)    shift; export AWS_DEFAULT_REGION="$1"; REGION_FLAG=(--region "$1") ;;
         --keep)      KEEP_INSTANCES=true ;;
         --help)      usage; exit 0 ;;
