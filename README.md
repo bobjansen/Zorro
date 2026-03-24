@@ -84,9 +84,10 @@ at full speed on AMD.
 ### Vectorized log (optional)
 
 Normal and exponential generation involve `log()`. By default, Zorro uses SIMD
-for the RNG core and scalar `std::log` for the transcendental. On glibc
-systems, define `ZORRO_USE_LIBMVEC` and link `-lmvec -lm` for fully vectorized
-log:
+for the RNG core. Normal falls back to scalar `std::log` without `libmvec`,
+while AVX2 exponential now defaults to a validated fast `-log(1-u)`
+approximation. On glibc systems, define `ZORRO_USE_LIBMVEC` and link
+`-lmvec -lm` for fully vectorized log in the exact paths:
 
 ```cpp
 #define ZORRO_USE_LIBMVEC
@@ -97,10 +98,13 @@ log:
 g++ -O2 -mavx2 -DZORRO_USE_LIBMVEC main.cpp -lmvec -lm
 ```
 
+If you want the exact AVX2 exponential path as well, add
+`-DZORRO_EXACT_EXPONENTIAL_LOG` alongside `ZORRO_USE_LIBMVEC`.
+
 | Distribution | Without libmvec | With libmvec |
 |---|---|---|
-| Normal | ~230 M/s | ~400 M/s |
-| Exponential | ~280 M/s | ~860 M/s |
+| Normal | ~230 M/s | ~470 M/s (exact AVX2 libmvec path) |
+| Exponential | ~950 M/s (default AVX2 fast approximation) | ~830 M/s (exact AVX2 libmvec path) |
 
 ### Other API
 
@@ -120,8 +124,8 @@ The benchmark target compares `2^20` samples across eight distribution suites
 and is configured for C++23.
 
 - **Uniform(0, 1)** -- scalar, x2, x4 portable, x4/x8 AVX2, x8/x16 AVX-512
-- **Normal(0, 1)** -- polar, batched, veclog, vecpolar (AVX2 and AVX-512)
-- **Exponential(1)** -- scalar log, veclog AVX2, veclog AVX-512
+- **Normal(0, 1)** -- polar, batched, veclog, vecpolar, and Box-Muller approximation variants (AVX2 and AVX-512)
+- **Exponential(1)** -- scalar log, AVX2 libmvec, AVX2 fastlog approximation, AVX-512 libmvec
 - **Bernoulli(0.3)** -- naive, integer-threshold AVX2, native ucmp AVX-512
 - **Bernoulli(0.3/0.5) -> uint8_t** -- compact 1-byte output with bit-unpack special case for p=0.5
 - **Gamma(2, 1)** -- scalar fused, x8 AVX2 fused/decoupled/full
@@ -205,7 +209,9 @@ especially `BigCrush` are much more expensive.
 
 `aws/bench.sh` launches spot instances, uploads the source, builds with
 both GCC and Clang across multiple SIMD levels (native, no-avx512, no-avx2,
-no-avx), and collects results. Results are saved under `aws/results/`.
+no-avx), runs `benchmark_distributions`, and runs the transform-quality tests
+(`normal_transform_tests` and `exponential_transform_tests`) where AVX2 is
+available. Results are saved under `aws/results/`.
 
 ```bash
 ./aws/bench.sh                                    # defaults: c6i, c7i, c7a
@@ -220,11 +226,11 @@ Results from `aws/bench.sh` (GCC 15, native SIMD, best ms).
 
 | Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
 |---|---|---|---|
-| scalar | 1.073 / 977 M/s | 1.262 / 831 M/s | 1.492 / 703 M/s |
-| x8 AVX2 (2x4) | 0.268 / 3916 M/s | 0.362 / 2895 M/s | 0.348 / 3015 M/s |
-| x16 AVX-512 (2x8) | 0.273 / 3840 M/s | 0.318 / 3299 M/s | 0.321 / 3263 M/s |
+| scalar | 1.072 / 978 M/s | 1.133 / 925 M/s | 1.498 / 700 M/s |
+| x8 AVX2 (2x4) | 0.268 / 3917 M/s | 0.314 / 3344 M/s | 0.342 / 3070 M/s |
+| x16 AVX-512 (2x8) | 0.274 / 3832 M/s | 0.289 / 3626 M/s | 0.281 / 3734 M/s |
 
-AVX-512 uniform is a modest win on Intel (~8-14% over AVX2) but roughly breaks
+AVX-512 uniform is a modest-to-clear win on Intel (~8-22% over AVX2) but roughly breaks
 even on AMD, where integer/bitwise 512-bit ops split into 256-bit micro-op
 pairs at full throughput.
 
@@ -232,27 +238,41 @@ pairs at full throughput.
 
 | Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
 |---|---|---|---|
-| x8 AVX2 + vecpolar | 3.046 / 344 M/s | 3.022 / 347 M/s | 3.627 / 289 M/s |
-| x16 AVX-512 + vecpolar | 3.052 / 344 M/s | 2.158 / 486 M/s | 2.643 / 397 M/s |
+| x8 AVX2 + box-muller fullapprox | 1.545 / 683 M/s | 1.281 / 835 M/s | 2.049 / 524 M/s |
+| x16 AVX-512 + box-muller fullapprox | 1.557 / 678 M/s | 1.025 / 1023 M/s | 1.536 / 683 M/s |
+| x8 AVX2 + vecpolar | 3.026 / 347 M/s | 2.792 / 376 M/s | 3.726 / 281 M/s |
+| x16 AVX-512 + vecpolar | 3.027 / 346 M/s | 1.978 / 530 M/s | 2.727 / 385 M/s |
 
-AVX-512 vecpolar gives a 1.3-1.4x speedup on Intel thanks to native 512-bit
-sqrt/div and hardware compress-store. On AMD Zen 4, the kernel automatically
-falls back to AVX2 vecpolar at runtime (CPUID vendor check) because 512-bit
-sqrt, div, and `_mm512_mask_compressstoreu_pd` serialize on the 256-bit
-datapath, making the AVX-512 version ~1.6x *slower* than AVX2 on AMD hardware.
+The new full-approximation Box-Muller path is now the best normal kernel in the
+tree. On Intel, widening it to `x16` AVX-512 gives another ~1.3x over the AVX2
+fullapprox path. On AMD Zen 4, the AVX-512 fullapprox row is effectively a tie
+with AVX2 because the benchmark kernel follows the same runtime policy as the
+library and falls back to the AVX2 implementation on AMD.
+
+AVX-512 vecpolar still helps on Intel thanks to native 512-bit sqrt/div and
+hardware compress-store, but it is no longer the strongest normal path. On AMD
+Zen 4, vecpolar also falls back to AVX2 at runtime (CPUID vendor check) because
+512-bit sqrt, div, and `_mm512_mask_compressstoreu_pd` serialize on the 256-bit
+datapath.
 
 ### Exponential and Bernoulli
 
 | Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
 |---|---|---|---|
-| Exp x8 AVX2 veclog | 1.743 / 602 M/s | 2.123 / 494 M/s | 2.355 / 445 M/s |
-| Exp x16 AVX-512 veclog | 1.322 / 793 M/s | 1.370 / 766 M/s | 1.374 / 763 M/s |
+| Exp x8 AVX2 libmvec | 1.714 / 612 M/s | 1.557 / 674 M/s | 2.372 / 442 M/s |
+| Exp x8 AVX2 fastlog | 1.412 / 743 M/s | 1.246 / 841 M/s | 1.754 / 598 M/s |
+| Exp x16 AVX-512 libmvec | 1.335 / 785 M/s | 1.003 / 1045 M/s | 1.403 / 748 M/s |
 | Bernoulli x8 AVX2 fast | 0.269 / 3893 M/s | 0.357 / 2934 M/s | 0.360 / 2912 M/s |
 | Bernoulli x16 AVX-512 ucmp | 0.247 / 4247 M/s | 0.325 / 3229 M/s | 0.363 / 2890 M/s |
 
-AVX-512 exponential benefits strongly from the 8-wide `_ZGVeN8v_log` (+32-71%
-over AVX2). AVX-512 Bernoulli uses native `_mm512_cmp_epu64_mask` to eliminate
-the sign-flip workaround required by AVX2's signed-only `_mm256_cmpgt_epi64`.
+For exponential, the validated AVX2 fastlog approximation beats the exact AVX2
+libmvec path on all three AWS machines. Intel still benefits from the wider
+`_ZGVeN8v_log` AVX-512 path, while Zen 4 sees only a small additional gain. The public
+`zorro::Rng::fill_exponential()` AVX2 path now defaults to the fastlog
+implementation, and the exact AVX2 libmvec path is left as an opt-in fallback.
+
+AVX-512 Bernoulli uses native `_mm512_cmp_epu64_mask` to eliminate the
+sign-flip workaround required by AVX2's signed-only `_mm256_cmpgt_epi64`.
 
 ### Bernoulli output formats and the p=0.5 special case
 
