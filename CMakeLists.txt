@@ -487,7 +487,7 @@ if(RNG_BENCH_ENABLE_STEPHANFR_AVX2)
     target_compile_options(
         benchmark_distributions
         PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2;-mfma>
     )
 endif()
 
@@ -495,19 +495,19 @@ if(RNG_BENCH_HAS_MAVX2)
     target_compile_options(
         normal_transform_comparison
         PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2;-mfma>
     )
 
     target_compile_options(
         normal_transform_tests
         PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2;-mfma>
     )
 
     target_compile_options(
         exponential_transform_tests
         PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2>
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-mavx2;-mfma>
     )
 endif()
 
