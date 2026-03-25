@@ -1,8 +1,10 @@
 # zorro
 
-Zorro is a header-only `xoshiro256++` library with automatic SIMD dispatch.
-Add one header and get high-throughput random generation for uniform, normal,
-exponential, Bernoulli, gamma, and Student's t distributions.
+Zorro is a header-only `xoshiro256++` library
+([paper](https://vigna.di.unimi.it/papers.php#BlVSLPNG) by Blackman and
+Vigna) with automatic SIMD dispatch. Add one header and get high-throughput
+random generation for uniform, normal, exponential, Bernoulli, gamma, and
+Student's t distributions.
 
 ## Quick start
 
