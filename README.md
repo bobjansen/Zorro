@@ -270,56 +270,60 @@ available. Results are saved under `aws/results/`.
 
 ## Findings
 
-Results from `aws/bench.sh` (GCC 15, native SIMD, best ms).
+Results from `aws/bench.sh` on March 24, 2026 (GCC 15, native SIMD, best ms).
+The latest successful runs in `aws/results/` are:
+
+- `c8a.large` -- AMD EPYC 9R45
+- `c8i.large` -- Intel Xeon 6975P-C
 
 ### Uniform generation
 
-| Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
-|---|---|---|---|
-| scalar | 1.072 / 978 M/s | 1.133 / 925 M/s | 1.498 / 700 M/s |
-| x8 AVX2 (2x4) | 0.268 / 3917 M/s | 0.314 / 3344 M/s | 0.342 / 3070 M/s |
-| x16 AVX-512 (2x8) | 0.274 / 3832 M/s | 0.289 / 3626 M/s | 0.281 / 3734 M/s |
+| Kernel | c8a.large (AMD) | c8i.large (Intel) |
+|---|---|---|
+| scalar | 1.024 / 1024 M/s | 1.152 / 910 M/s |
+| x8 AVX2 (2x4) | 0.258 / 4072 M/s | 0.320 / 3275 M/s |
+| x16 AVX-512 (2x8) | 0.130 / 8083 M/s | 0.284 / 3690 M/s |
 
-AVX-512 uniform is a modest-to-clear win on Intel (~8-22% over AVX2) but roughly breaks
-even on AMD, where integer/bitwise 512-bit ops split into 256-bit micro-op
-pairs at full throughput.
+On the current AMD `c8a.large` host, uniform generation scales extremely well
+with AVX-512: `x16` is almost 2x the `x8` AVX2 path. On the Intel `c8i.large`
+host, AVX-512 still wins, but the gain is more modest.
 
 ### Normal generation
 
-| Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
-|---|---|---|---|
-| x8 AVX2 + box-muller fullapprox | 1.545 / 683 M/s | 1.281 / 835 M/s | 2.049 / 524 M/s |
-| x16 AVX-512 + box-muller fullapprox | 1.557 / 678 M/s | 1.025 / 1023 M/s | 1.536 / 683 M/s |
-| x8 AVX2 + vecpolar | 3.026 / 347 M/s | 2.792 / 376 M/s | 3.726 / 281 M/s |
-| x16 AVX-512 + vecpolar | 3.027 / 346 M/s | 1.978 / 530 M/s | 2.727 / 385 M/s |
+| Kernel | c8a.large (AMD) | c8i.large (Intel) |
+|---|---|---|
+| x8 AVX2 + box-muller fullapprox | 1.117 / 939 M/s | 1.287 / 815 M/s |
+| x16 AVX-512 + box-muller fullapprox | 1.123 / 934 M/s | 1.007 / 1041 M/s |
+| x8 AVX2 + vecpolar | 2.581 / 406 M/s | 2.757 / 380 M/s |
+| x16 AVX-512 + vecpolar | 2.673 / 392 M/s | 1.899 / 552 M/s |
 
 The new full-approximation Box-Muller path is now the best normal kernel in the
-tree. On Intel, widening it to `x16` AVX-512 gives another ~1.3x over the AVX2
-fullapprox path. On AMD Zen 4, the AVX-512 fullapprox row is effectively a tie
-with AVX2 because the benchmark kernel follows the same runtime policy as the
-AVX-512 vecpolar experiment and falls back to the AVX2 implementation on AMD.
+tree. On Intel, widening it to `x16` AVX-512 gives another ~1.28x over the AVX2
+fullapprox path. On the AMD `c8a.large` run, the `x16` AVX-512 fullapprox row
+is effectively a tie with AVX2 rather than an improvement.
 
 AVX-512 vecpolar still helps on Intel thanks to native 512-bit sqrt/div and
-hardware compress-store, but it is no longer the strongest normal path. On AMD
-Zen 4, vecpolar also falls back to AVX2 at runtime (CPUID vendor check) because
-512-bit sqrt, div, and `_mm512_mask_compressstoreu_pd` serialize on the 256-bit
-datapath.
+hardware compress-store, but it is no longer the strongest normal path. On the
+current AMD host, vecpolar does not improve with AVX-512 and is slightly slower
+than the AVX2 version in these runs.
 
 ### Exponential and Bernoulli
 
-| Kernel | c7a (Zen 4) | c7i (SPR) | c6i (Ice Lake) |
-|---|---|---|---|
-| Exp x8 AVX2 libmvec | 1.714 / 612 M/s | 1.557 / 674 M/s | 2.372 / 442 M/s |
-| Exp x8 AVX2 fastlog | 1.412 / 743 M/s | 1.246 / 841 M/s | 1.754 / 598 M/s |
-| Exp x16 AVX-512 libmvec | 1.335 / 785 M/s | 1.003 / 1045 M/s | 1.403 / 748 M/s |
-| Bernoulli x8 AVX2 fast | 0.269 / 3893 M/s | 0.357 / 2934 M/s | 0.360 / 2912 M/s |
-| Bernoulli x16 AVX-512 ucmp | 0.247 / 4247 M/s | 0.325 / 3229 M/s | 0.363 / 2890 M/s |
+| Kernel | c8a.large (AMD) | c8i.large (Intel) |
+|---|---|---|
+| Exp x8 AVX2 libmvec | 1.335 / 786 M/s | 1.624 / 646 M/s |
+| Exp x8 AVX2 fastlog | 1.194 / 878 M/s | 1.217 / 862 M/s |
+| Exp x16 AVX-512 libmvec | 0.850 / 1233 M/s | 1.180 / 889 M/s |
+| Bernoulli x8 AVX2 fast | 0.236 / 4435 M/s | 0.310 / 3383 M/s |
+| Bernoulli x16 AVX-512 ucmp | 0.122 / 8585 M/s | 0.281 / 3735 M/s |
 
-For exponential, the validated AVX2 fastlog approximation beats the exact AVX2
-libmvec path on all three AWS machines. Intel still benefits from the wider
-`_ZGVeN8v_log` AVX-512 path, while Zen 4 sees only a small additional gain.
-The public `zorro::Rng::fill_exponential()` path now sticks to the AVX2
-fastlog implementation; the exact `libmvec` variants remain benchmark-only.
+For exponential, the validated AVX2 fastlog approximation still beats the
+exact AVX2 `libmvec` path on both current AWS machines. Intel still benefits
+slightly from the wider AVX-512 `libmvec` path, but the biggest surprise in the
+latest run is AMD `c8a.large`, where AVX-512 `libmvec` jumps to 1233 M/s and
+overtakes both AVX2 variants by a wide margin. The public
+`zorro::Rng::fill_exponential()` path still sticks to the AVX2 fastlog
+implementation; the exact `libmvec` variants remain benchmark-only.
 
 AVX-512 Bernoulli uses native `_mm512_cmp_epu64_mask` to eliminate the
 sign-flip workaround required by AVX2's signed-only `_mm256_cmpgt_epi64`.
@@ -357,14 +361,14 @@ to the output buffer.
 
 ### Fused vs decoupled generation
 
-**Gamma(2, 1) -- fused wins decisively**
+**Gamma(2, 1) -- full/fused still win decisively**
 
-| Kernel | c7a (Zen 4) | c7i (SPR) |
+| Kernel | c8a.large (AMD) | c8i.large (Intel) |
 |---|---|---|
-| scalar fused | 48 M/s | 47 M/s |
-| x8 AVX2 fused | 125 M/s | 127 M/s |
-| x8+x4 AVX2 full (vectorized MT) | 133 M/s | 126 M/s |
-| x8 AVX2 decoupled | 60 M/s | 66 M/s |
+| scalar fused | 61 M/s | 58 M/s |
+| x8 AVX2 fused | 148 M/s | 144 M/s |
+| x8+x4 AVX2 full (vectorized MT) | 160 M/s | 144 M/s |
+| x8 AVX2 decoupled | 90 M/s | 77 M/s |
 
 Fused keeps the PRNG state registers hot and feeds the Marsaglia-Tsang
 acceptance loop directly from a 64-sample L1-resident buffer. Decoupled
@@ -373,12 +377,12 @@ bandwidth for no gain.
 
 **Student's t(5) -- decoupled wins**
 
-| Kernel | c7a (Zen 4) | c7i (SPR) |
+| Kernel | c8a.large (AMD) | c8i.large (Intel) |
 |---|---|---|
-| scalar fused | 26 M/s | 29 M/s |
-| x8 AVX2 fused | 35 M/s | 38 M/s |
-| x8 AVX2 decoupled | 62 M/s | 61 M/s |
-| x8+x4 AVX2 fast | 64 M/s | 62 M/s |
+| scalar fused | 34 M/s | 34 M/s |
+| x8 AVX2 fused | 48 M/s | 45 M/s |
+| x8 AVX2 decoupled | 77 M/s | 72 M/s |
+| x8+x4 AVX2 fast | 77 M/s | 73 M/s |
 
 For a compound distribution the fused variant forces a scalar Gamma loop into
 the hot path. Decoupled lets each sub-distribution run its own best kernel
@@ -387,24 +391,24 @@ independently; the memory-traffic cost is more than recovered.
 **Summary**
 
 - Fused integration is the right default when the distribution is
-  self-contained and fits in L1 (Gamma: 2x over decoupled).
+  self-contained and fits in L1 (Gamma: about 1.6-1.9x over decoupled in the
+  latest AWS run).
 - Decoupled is better for compound distributions where one sub-computation
-  would otherwise serialize an otherwise-vectorised pipeline (Student-t: 1.7x
-  over fused).
+  would otherwise serialize an otherwise-vectorised pipeline (Student-t: about
+  1.5-1.6x over fused).
 - AVX-512 is not extended to Gamma or Student-t: their bottleneck is the
   scalar Marsaglia-Tsang acceptance loop, not the PRNG or vectorized math.
 
 ### AMD vs Intel: when AVX-512 helps and when it hurts
 
-AMD Zen 4 implements AVX-512 by splitting every 512-bit op into two 256-bit
-micro-ops. This is transparent for integer-heavy kernels (uniform, Bernoulli)
-where both halves pipeline through the ALUs at full throughput. But for
-FP-math-heavy kernels with sqrt, div, and compress-store (vecpolar), the two
-halves serialize on the single divider unit, making 512-bit strictly worse
-than 256-bit.
+On the latest AWS pair, AVX-512 helps most clearly in the integer-heavy kernels
+(uniform, Bernoulli) and in Intel's fullapprox normal path. The benchmark-only
+vecpolar kernels remain a useful counterexample: Intel still benefits from
+AVX-512 there, while the current AMD run does not.
 
-The `cpu_is_amd()` check in the vecpolar kernel detects this at runtime and
-routes AMD hardware to the AVX2 path automatically.
+That is the main reason the public library now keeps a narrower AVX-512 scope:
+use it where it wins clearly, and avoid carrying extra complexity into the
+public header for the transform paths that no longer need it.
 
 ## Third-party code
 
