@@ -1,31 +1,93 @@
 # zorro
 
 Zorro is a header-only `xoshiro256++` library with automatic SIMD dispatch.
-Copy a single header into your project and get high-performance random number
-generation across uniform, normal, exponential, and Bernoulli distributions.
+Add one header and get high-throughput random generation for uniform, normal,
+exponential, Bernoulli, gamma, and Student's t distributions.
 
-## Usage
+## Quick start
 
-Copy `include/zorro/zorro.hpp` into your project. Compile with `-mavx2` or
-`-march=native` (C++20 or later).
+Zorro is header-only. The main header is:
+
+```text
+include/zorro/zorro.hpp
+```
+
+That is the canonical public include. Compile with `-O3` (`C++20` or later)
+plus the SIMD flags you want:
+
+- portable: no extra SIMD flags
+- AVX2: `-mavx2`
+- AVX2 + FMA: `-mavx2 -mfma`
+- AVX-512: `-mavx512f -mavx512vl -mavx512dq`
+- host-tuned: `-march=native`
+
+For example:
+
+```bash
+g++ -O3 -std=c++20 -mavx2 -I./include main.cpp
+```
+
+For repository builds with CMake, `-DRNG_BENCH_ENABLE_AVX512=ON` enables the
+AVX-512 targets explicitly.
+
+### `zorro::Rng`
+
+`zorro::Rng` is the main bulk-fill API. You provide a `double*` output buffer
+and a sample count. See `examples/print.cpp` for a complete example covering
+uniform, normal, exponential, Bernoulli, gamma, and Student's t generation.
+
+Main methods:
+
+- `fill_uniform(out, count)` for uniform samples in `[0, 1)`.
+- `fill_uniform(out, count, low, high)` for uniform samples in `[low, high)`.
+- `fill_normal(out, count, mean, stddev)` for normal samples.
+- `fill_exponential(out, count, lambda)` for exponential samples.
+- `fill_bernoulli(out, count, p)` for `0.0` / `1.0` Bernoulli output.
+- `fill_gamma(out, count, alpha)` for `Gamma(alpha, 1)`.
+- `fill_student_t(out, count, nu)` for Student's t samples.
+
+From this repo, you can build it directly with:
+
+```bash
+g++ -O3 -std=c++20 -mavx2 -I./include examples/print.cpp
+```
+
+Notes:
+
+- `fill_gamma(..., alpha)` currently assumes `alpha >= 1`.
+- `fill_bernoulli` writes `double` outputs (`0.0` or `1.0`), not `bool`.
+- For small scalar-style draws, `zorro::Xoshiro256pp` also works as a standard
+  `UniformRandomBitGenerator`.
+
+```cpp
+#include "zorro/zorro.hpp"
+#include <random>
+
+int main() {
+    zorro::Xoshiro256pp rng(42);
+    std::uniform_int_distribution<int> die(1, 6);
+    return die(rng);
+}
+```
+
+### Thread-local convenience
+
+If you do not want to thread an RNG object through your code, use the built-in
+thread-local singleton:
 
 ```cpp
 #include "zorro/zorro.hpp"
 #include <vector>
 
 int main() {
-    zorro::Rng rng(42);
-    std::vector<double> buf(1'000'000);
+    std::vector<double> buf(4096);
 
-    rng.fill_uniform(buf.data(), buf.size());                   // [0, 1)
-    rng.fill_uniform(buf.data(), buf.size(), -1.0, 1.0);        // [-1, 1)
-    rng.fill_normal(buf.data(), buf.size());                     // N(0, 1)
-    rng.fill_normal(buf.data(), buf.size(), 100.0, 15.0);        // N(100, 15)
-    rng.fill_exponential(buf.data(), buf.size());                // Exp(1)
-    rng.fill_exponential(buf.data(), buf.size(), 0.5);           // Exp(0.5)
-    rng.fill_bernoulli(buf.data(), buf.size(), 0.3);             // Bernoulli(0.3)
+    zorro::reseed(1234);
+    zorro::get_rng().fill_normal(buf.data(), buf.size());
 }
 ```
+
+## Repository examples
 
 ### High-dimensional example
 
@@ -65,10 +127,12 @@ Useful options:
 - `--dimension N`, `--factors N`, `--paths N`, and `--repetitions N` scale the workload.
 - `--backend std|zorro|both` switches the RNG implementation at runtime.
 
-### SIMD dispatch
+## SIMD dispatch
 
 The SIMD tier is selected at compile time based on which instruction sets are
-enabled. Within a tier, runtime CPUID checks handle AMD/Intel differences.
+enabled. In the public header, AVX-512 currently accelerates the integer-heavy
+kernels (`uniform`, `bernoulli`), while the log-heavy transforms use the AVX2
+or portable implementations.
 
 | Compile flags | Engine | Uniform throughput |
 |---|---|---|
@@ -76,37 +140,23 @@ enabled. Within a tier, runtime CPUID checks handle AMD/Intel differences.
 | `-mavx2` | 8-wide AVX2 (2x4 interleaved) | ~2900 M/s |
 | (neither) | 4-wide portable (compiler auto-vec) | ~1200 M/s |
 
-The AMD Zen 4 runtime check applies to FP-heavy kernels (normal): 512-bit
-sqrt/div serialize on the 256-bit datapath, so the library falls back to AVX2
-vecpolar automatically. Integer-only kernels (uniform, bernoulli) use AVX-512
-at full speed on AMD.
+For Zen 4-style CPUs, this keeps the public library on the simpler and usually
+more defensible side of the tradeoff: AVX-512 where it helps clearly, AVX2 or
+portable code for the heavier transcendental paths.
 
-### Vectorized log (optional)
+### Log-heavy transforms
 
-Normal and exponential generation involve `log()`. By default, Zorro uses SIMD
-for the RNG core. Normal falls back to scalar `std::log` without `libmvec`,
-while AVX2 exponential now defaults to a validated fast `-log(1-u)`
-approximation. On glibc systems, define `ZORRO_USE_LIBMVEC` and link
-`-lmvec -lm` for fully vectorized log in the exact paths:
+The public header no longer depends on `libmvec`.
 
-```cpp
-#define ZORRO_USE_LIBMVEC
-#include "zorro/zorro.hpp"
-```
+- `fill_exponential()` uses the validated AVX2 fast `-log(1-u)` approximation
+  when AVX2 is available.
+- `fill_normal()`, `fill_gamma()`, and `fill_student_t()` use SIMD for the RNG
+  core and scalar `std::log`/`std::sqrt` in their acceptance or transform
+  steps.
+- The benchmark harness still includes `libmvec`-backed `veclog` and
+  `vecpolar` kernels for comparison.
 
-```bash
-g++ -O2 -mavx2 -DZORRO_USE_LIBMVEC main.cpp -lmvec -lm
-```
-
-If you want the exact AVX2 exponential path as well, add
-`-DZORRO_EXACT_EXPONENTIAL_LOG` alongside `ZORRO_USE_LIBMVEC`.
-
-| Distribution | Without libmvec | With libmvec |
-|---|---|---|
-| Normal | ~230 M/s | ~470 M/s (exact AVX2 libmvec path) |
-| Exponential | ~950 M/s (default AVX2 fast approximation) | ~830 M/s (exact AVX2 libmvec path) |
-
-### Other API
+### Lower-level API
 
 The header also provides building-block types for direct use:
 
@@ -247,7 +297,7 @@ The new full-approximation Box-Muller path is now the best normal kernel in the
 tree. On Intel, widening it to `x16` AVX-512 gives another ~1.3x over the AVX2
 fullapprox path. On AMD Zen 4, the AVX-512 fullapprox row is effectively a tie
 with AVX2 because the benchmark kernel follows the same runtime policy as the
-library and falls back to the AVX2 implementation on AMD.
+AVX-512 vecpolar experiment and falls back to the AVX2 implementation on AMD.
 
 AVX-512 vecpolar still helps on Intel thanks to native 512-bit sqrt/div and
 hardware compress-store, but it is no longer the strongest normal path. On AMD
@@ -267,9 +317,9 @@ datapath.
 
 For exponential, the validated AVX2 fastlog approximation beats the exact AVX2
 libmvec path on all three AWS machines. Intel still benefits from the wider
-`_ZGVeN8v_log` AVX-512 path, while Zen 4 sees only a small additional gain. The public
-`zorro::Rng::fill_exponential()` AVX2 path now defaults to the fastlog
-implementation, and the exact AVX2 libmvec path is left as an opt-in fallback.
+`_ZGVeN8v_log` AVX-512 path, while Zen 4 sees only a small additional gain.
+The public `zorro::Rng::fill_exponential()` path now sticks to the AVX2
+fastlog implementation; the exact `libmvec` variants remain benchmark-only.
 
 AVX-512 Bernoulli uses native `_mm512_cmp_epu64_mask` to eliminate the
 sign-flip workaround required by AVX2's signed-only `_mm256_cmpgt_epi64`.
