@@ -20,17 +20,10 @@
 //   -mavx2                            →   8-wide AVX2   (2×4 interleaved)
 //   (neither)                         →   4-wide portable (compiler auto-vec)
 //
-// AMD Zen 4 runtime detection: integer-only kernels (uniform, bernoulli) use
-// AVX-512 at full speed; FP-heavy kernels (normal) fall back to AVX2 because
-// 512-bit sqrt/div serialize on the 256-bit datapath.
-//
-// Optional: #define ZORRO_USE_LIBMVEC before including, and link -lmvec -lm,
-// for exact vectorized log in the libmvec-backed normal/gamma/Student-t paths
-// and the AVX-512 exponential path (glibc only).
-//
-// Optional: #define ZORRO_EXACT_EXPONENTIAL_LOG before including to force the
-// exact AVX2 exponential path as well. By default, AVX2 exponential uses the
-// faster validated approximation.
+// AVX-512 currently accelerates the integer-only kernels (uniform and
+// bernoulli). Log-heavy transforms use the AVX2 approximation/scalar paths
+// below rather than carrying extra libmvec-specific complexity in the public
+// header.
 
 #include <array>
 #include <cmath>
@@ -41,18 +34,6 @@
 
 #if defined(__AVX2__) || defined(__AVX512F__)
 #include <immintrin.h>
-#endif
-#if defined(__AVX512F__) && (defined(__GNUC__) || defined(__clang__))
-#include <cpuid.h>
-#endif
-
-#ifdef ZORRO_USE_LIBMVEC
-#ifdef __AVX2__
-extern "C" __m256d _ZGVdN4v_log(__m256d) noexcept;
-#endif
-#ifdef __AVX512F__
-extern "C" __m512d _ZGVeN8v_log(__m512d) noexcept;
-#endif
 #endif
 
 namespace zorro {
@@ -328,9 +309,9 @@ inline auto floatbitmask64_avx2(__m256i bits) noexcept -> __m256d {
   return _mm256_castsi256_pd(_mm256_or_si256(mantissa, exponent));
 }
 
-// Fast AVX2 approximation of -log(u) for u in (0, 1]. This is shared by the
-// exponential path today and is shaped so other log-based transforms can reuse
-// the same mantissa/exponent normalization later.
+// Fast AVX2 approximation of -log(u) for u in (0, 1]. This is used by the
+// public exponential path; more elaborate libmvec-backed variants live in the
+// benchmark harness rather than the public header.
 inline auto log2_3q_avx2(__m256d v, __m256d e) noexcept -> __m256d {
   const __m256d c0 = _mm256_set1_pd(0.22119417504560815);
   const __m256d c1 = _mm256_set1_pd(0.22007686931522777);
@@ -426,15 +407,6 @@ inline void seed_x8(std::uint64_t seed, std::uint64_t (&sa0)[4],
 // ───────────────────────────────────────────────────────────
 
 #ifdef __AVX512F__
-
-inline auto cpu_is_amd() noexcept -> bool {
-  static const bool is_amd = [] {
-    unsigned eax, ebx, ecx, edx;
-    __cpuid(0, eax, ebx, ecx, edx);
-    return ebx == 0x68747541u && edx == 0x69746e65u && ecx == 0x444d4163u;
-  }();
-  return is_amd;
-}
 
 template <int k> inline auto rotl64_avx512(__m512i x) noexcept -> __m512i {
   return _mm512_rol_epi64(x, k);
@@ -606,14 +578,7 @@ public:
 
   void fill_normal(double *__restrict__ out, std::size_t count,
                    double mean = 0.0, double stddev = 1.0) noexcept {
-#if defined(__AVX512F__) && defined(ZORRO_USE_LIBMVEC)
-    if (!detail::cpu_is_amd()) {
-      fill_normal_avx512_vecpolar(out, count, mean, stddev);
-      return;
-    }
-    // AMD: fall through to AVX2
-    fill_normal_avx2(out, count, mean, stddev);
-#elif defined(__AVX2__)
+#ifdef __AVX2__
     fill_normal_avx2(out, count, mean, stddev);
 #else
     fill_normal_portable(out, count, mean, stddev);
@@ -625,9 +590,7 @@ public:
   void fill_exponential(double *__restrict__ out, std::size_t count,
                         double lambda = 1.0) noexcept {
     const double inv_lambda = 1.0 / lambda;
-#if defined(__AVX512F__) && defined(ZORRO_USE_LIBMVEC)
-    fill_exponential_avx512_veclog(out, count, inv_lambda);
-#elif defined(__AVX2__)
+#ifdef __AVX2__
     fill_exponential_avx2(out, count, inv_lambda);
 #else
     fill_exponential_portable(out, count, inv_lambda);
@@ -899,85 +862,6 @@ private:
   void fill_normal_avx2(double *__restrict__ out, std::size_t count,
                         double mean, double stddev) noexcept {
     auto [a0, a1, a2, a3, b0, b1, b2, b3] = load_avx2();
-#ifdef ZORRO_USE_LIBMVEC
-    // Fully vectorized polar with libmvec log
-    const __m256d one = _mm256_set1_pd(1.0);
-    const __m256d zero = _mm256_setzero_pd();
-    const __m256d neg2 = _mm256_set1_pd(-2.0);
-    const __m256d safe_val = _mm256_set1_pd(0.5);
-    const __m256d vmean = _mm256_set1_pd(mean);
-    const __m256d vstd = _mm256_set1_pd(stddev);
-
-    std::size_t i = 0;
-    while (i < count) {
-      // Group a
-      {
-        const __m256d u1 =
-            detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3));
-        const __m256d u2 =
-            detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3));
-        const __m256d s =
-            _mm256_add_pd(_mm256_mul_pd(u1, u1), _mm256_mul_pd(u2, u2));
-        const __m256d accept =
-            _mm256_and_pd(_mm256_cmp_pd(s, one, _CMP_LT_OQ),
-                          _mm256_cmp_pd(s, zero, _CMP_GT_OQ));
-        const int mask_bits = _mm256_movemask_pd(accept);
-        if (mask_bits) {
-          const __m256d safe_s = _mm256_blendv_pd(safe_val, s, accept);
-          const __m256d factor = _mm256_sqrt_pd(
-              _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(safe_s)), safe_s));
-          const __m256d n1 = _mm256_add_pd(
-              vmean, _mm256_mul_pd(vstd, _mm256_mul_pd(u1, factor)));
-          const __m256d n2 = _mm256_add_pd(
-              vmean, _mm256_mul_pd(vstd, _mm256_mul_pd(u2, factor)));
-          alignas(32) double n1v[4], n2v[4];
-          _mm256_store_pd(n1v, n1);
-          _mm256_store_pd(n2v, n2);
-          for (int lane = 0; lane < 4 && i < count; ++lane) {
-            if (mask_bits & (1 << lane)) {
-              out[i++] = n1v[lane];
-              if (i < count)
-                out[i++] = n2v[lane];
-            }
-          }
-        }
-      }
-      if (i >= count)
-        break;
-      // Group b
-      {
-        const __m256d u1 =
-            detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3));
-        const __m256d u2 =
-            detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3));
-        const __m256d s =
-            _mm256_add_pd(_mm256_mul_pd(u1, u1), _mm256_mul_pd(u2, u2));
-        const __m256d accept =
-            _mm256_and_pd(_mm256_cmp_pd(s, one, _CMP_LT_OQ),
-                          _mm256_cmp_pd(s, zero, _CMP_GT_OQ));
-        const int mask_bits = _mm256_movemask_pd(accept);
-        if (mask_bits) {
-          const __m256d safe_s = _mm256_blendv_pd(safe_val, s, accept);
-          const __m256d factor = _mm256_sqrt_pd(
-              _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(safe_s)), safe_s));
-          const __m256d n1 = _mm256_add_pd(
-              vmean, _mm256_mul_pd(vstd, _mm256_mul_pd(u1, factor)));
-          const __m256d n2 = _mm256_add_pd(
-              vmean, _mm256_mul_pd(vstd, _mm256_mul_pd(u2, factor)));
-          alignas(32) double n1v[4], n2v[4];
-          _mm256_store_pd(n1v, n1);
-          _mm256_store_pd(n2v, n2);
-          for (int lane = 0; lane < 4 && i < count; ++lane) {
-            if (mask_bits & (1 << lane)) {
-              out[i++] = n1v[lane];
-              if (i < count)
-                out[i++] = n2v[lane];
-            }
-          }
-        }
-      }
-    }
-#else
     // SIMD RNG + scalar polar (no libmvec dependency)
     alignas(32) double tmp[4];
     std::size_t i = 0;
@@ -1018,44 +902,12 @@ private:
           out[i++] = mean + stddev * u2 * scale;
       }
     }
-#endif // ZORRO_USE_LIBMVEC
     store_avx2(a0, a1, a2, a3, b0, b1, b2, b3);
   }
 
   void fill_exponential_avx2(double *__restrict__ out, std::size_t count,
                              double inv_lambda) noexcept {
     auto [a0, a1, a2, a3, b0, b1, b2, b3] = load_avx2();
-#if defined(ZORRO_USE_LIBMVEC) && defined(ZORRO_EXACT_EXPONENTIAL_LOG)
-    const __m256d neg_inv = _mm256_set1_pd(-inv_lambda);
-    std::size_t i = 0;
-    while (i + 8 <= count) {
-      _mm256_storeu_pd(
-          out + i,
-          _mm256_mul_pd(neg_inv, _ZGVdN4v_log(detail::u64_to_uniform01_avx2(
-                                     detail::next_x4_avx2(a0, a1, a2, a3)))));
-      _mm256_storeu_pd(
-          out + i + 4,
-          _mm256_mul_pd(neg_inv, _ZGVdN4v_log(detail::u64_to_uniform01_avx2(
-                                     detail::next_x4_avx2(b0, b1, b2, b3)))));
-      i += 8;
-    }
-    while (i + 4 <= count) {
-      _mm256_storeu_pd(
-          out + i,
-          _mm256_mul_pd(neg_inv, _ZGVdN4v_log(detail::u64_to_uniform01_avx2(
-                                     detail::next_x4_avx2(a0, a1, a2, a3)))));
-      i += 4;
-    }
-    if (i < count) {
-      alignas(32) double tail[4];
-      _mm256_store_pd(
-          tail,
-          _mm256_mul_pd(neg_inv, _ZGVdN4v_log(detail::u64_to_uniform01_avx2(
-                                     detail::next_x4_avx2(a0, a1, a2, a3)))));
-      for (std::size_t lane = 0; i < count; ++lane, ++i)
-        out[i] = tail[lane];
-    }
-#else
     const __m256d one = _mm256_set1_pd(1.0);
     const __m256d inv = _mm256_set1_pd(inv_lambda);
     // The approximation is keyed to u in (0, 1], so we generate Exp(1) via
@@ -1088,7 +940,6 @@ private:
       for (std::size_t lane = 0; i < count; ++lane, ++i)
         out[i] = tail[lane];
     }
-#endif
     store_avx2(a0, a1, a2, a3, b0, b1, b2, b3);
   }
 
@@ -1149,116 +1000,6 @@ private:
 
     static constexpr int kBuf = 64;
     alignas(32) double buf_x[kBuf];
-
-#ifdef ZORRO_USE_LIBMVEC
-    const __m256d one      = _mm256_set1_pd(1.0);
-    const __m256d zero     = _mm256_setzero_pd();
-    const __m256d neg2     = _mm256_set1_pd(-2.0);
-    const __m256d half     = _mm256_set1_pd(0.5);
-    const __m256d safe_val = _mm256_set1_pd(0.5);
-    const __m256d d_vec    = _mm256_set1_pd(d);
-    const __m256d c_vec    = _mm256_set1_pd(c);
-    const __m256d mt_coeff = _mm256_set1_pd(0.0331);
-
-    std::size_t i = 0;
-    while (i < count) {
-      // Phase 1: vectorized polar → buf_x
-      int n = 0;
-      while (n < kBuf) {
-        // Group a
-        {
-          const __m256d u1  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3));
-          const __m256d u2  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(a0, a1, a2, a3));
-          const __m256d s   = _mm256_add_pd(_mm256_mul_pd(u1, u1), _mm256_mul_pd(u2, u2));
-          const __m256d acc = _mm256_and_pd(_mm256_cmp_pd(s, one, _CMP_LT_OQ),
-                                            _mm256_cmp_pd(s, zero, _CMP_GT_OQ));
-          const int bits = _mm256_movemask_pd(acc);
-          if (bits) {
-            const __m256d sf  = _mm256_blendv_pd(safe_val, s, acc);
-            const __m256d fac = _mm256_sqrt_pd(
-                _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf)), sf));
-            alignas(32) double xa[4], xa2[4];
-            _mm256_store_pd(xa,  _mm256_mul_pd(u1, fac));
-            _mm256_store_pd(xa2, _mm256_mul_pd(u2, fac));
-            for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
-              if (bits & (1 << lane)) {
-                buf_x[n++] = xa[lane];
-                if (n < kBuf) buf_x[n++] = xa2[lane];
-              }
-            }
-          }
-        }
-        // Group b
-        {
-          const __m256d u1  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3));
-          const __m256d u2  = detail::u64_to_pm1_avx2(detail::next_x4_avx2(b0, b1, b2, b3));
-          const __m256d s   = _mm256_add_pd(_mm256_mul_pd(u1, u1), _mm256_mul_pd(u2, u2));
-          const __m256d acc = _mm256_and_pd(_mm256_cmp_pd(s, one, _CMP_LT_OQ),
-                                            _mm256_cmp_pd(s, zero, _CMP_GT_OQ));
-          const int bits = _mm256_movemask_pd(acc);
-          if (bits) {
-            const __m256d sf  = _mm256_blendv_pd(safe_val, s, acc);
-            const __m256d fac = _mm256_sqrt_pd(
-                _mm256_div_pd(_mm256_mul_pd(neg2, _ZGVdN4v_log(sf)), sf));
-            alignas(32) double xb[4], xb2[4];
-            _mm256_store_pd(xb,  _mm256_mul_pd(u1, fac));
-            _mm256_store_pd(xb2, _mm256_mul_pd(u2, fac));
-            for (int lane = 0; lane < 4 && n < kBuf; ++lane) {
-              if (bits & (1 << lane)) {
-                buf_x[n++] = xb[lane];
-                if (n < kBuf) buf_x[n++] = xb2[lane];
-              }
-            }
-          }
-        }
-      }
-      // Phase 2: vectorized MT acceptance using group a for uniforms
-      int k = 0;
-      for (; k + 4 <= n && i < count; k += 4) {
-        const __m256d x  = _mm256_load_pd(buf_x + k);
-        const __m256d u  = detail::u64_to_uniform01_avx2(
-            detail::next_x4_avx2(a0, a1, a2, a3));
-        const __m256d vr     = _mm256_add_pd(one, _mm256_mul_pd(c_vec, x));
-        const __m256d vr_pos = _mm256_cmp_pd(vr, zero, _CMP_GT_OQ);
-        const __m256d sv     = _mm256_blendv_pd(one, vr, vr_pos);
-        const __m256d v      = _mm256_mul_pd(sv, _mm256_mul_pd(sv, sv));
-        const __m256d x2          = _mm256_mul_pd(x, x);
-        const __m256d x4          = _mm256_mul_pd(x2, x2);
-        const __m256d fast_thresh = _mm256_sub_pd(one, _mm256_mul_pd(mt_coeff, x4));
-        const __m256d fast_acc    = _mm256_cmp_pd(u, fast_thresh, _CMP_LT_OQ);
-        const __m256d log_u    = _ZGVdN4v_log(u);
-        const __m256d log_v    = _ZGVdN4v_log(v);
-        const __m256d slow_rhs = _mm256_add_pd(
-            _mm256_mul_pd(half, x2),
-            _mm256_mul_pd(d_vec, _mm256_add_pd(_mm256_sub_pd(one, v), log_v)));
-        const __m256d slow_acc   = _mm256_cmp_pd(log_u, slow_rhs, _CMP_LT_OQ);
-        const __m256d accept     = _mm256_and_pd(vr_pos, _mm256_or_pd(fast_acc, slow_acc));
-        const int     accept_bits = _mm256_movemask_pd(accept);
-        if (accept_bits) {
-          alignas(32) double gv[4];
-          _mm256_store_pd(gv, _mm256_mul_pd(d_vec, v));
-          for (int lane = 0; lane < 4 && i < count; ++lane) {
-            if (accept_bits & (1 << lane))
-              out[i++] = gv[lane];
-          }
-        }
-      }
-      // Scalar tail
-      for (; k < n && i < count; ++k) {
-        const double x  = buf_x[k];
-        const double vr = 1.0 + c * x;
-        if (vr <= 0.0) continue;
-        const double v  = vr * vr * vr;
-        alignas(32) double utail[4];
-        _mm256_store_pd(utail, detail::u64_to_uniform01_avx2(
-                                   detail::next_x4_avx2(a0, a1, a2, a3)));
-        const double u  = utail[0];
-        const double x2 = x * x;
-        if (u < 1.0 - 0.0331 * x2 * x2) { out[i++] = d * v; continue; }
-        if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
-      }
-    }
-#else
     // SIMD RNG + scalar polar + scalar MT
     alignas(32) double tmp_u1[4], tmp_u2[4];
     std::size_t i = 0;
@@ -1317,7 +1058,6 @@ private:
         if (std::log(u) < 0.5 * x2 + d * (1.0 - v + std::log(v))) { out[i++] = d * v; }
       }
     }
-#endif
     store_avx2(a0, a1, a2, a3, b0, b1, b2, b3);
   }
 
@@ -1376,120 +1116,6 @@ private:
     }
     store_avx512(a0, a1, a2, a3, b0, b1, b2, b3);
   }
-
-#ifdef ZORRO_USE_LIBMVEC
-  void fill_normal_avx512_vecpolar(double *__restrict__ out, std::size_t count,
-                                   double mean, double stddev) noexcept {
-    auto [a0, a1, a2, a3, b0, b1, b2, b3] = load_avx512();
-    const __m512d one = _mm512_set1_pd(1.0);
-    const __m512d zero = _mm512_setzero_pd();
-    const __m512d neg2 = _mm512_set1_pd(-2.0);
-    const __m512d safe_val = _mm512_set1_pd(0.5);
-    const __m512d vmean = _mm512_set1_pd(mean);
-    const __m512d vstd = _mm512_set1_pd(stddev);
-
-    std::size_t i = 0;
-    while (i < count) {
-      // Group a
-      {
-        const __m512d u1 =
-            detail::u64_to_pm1_avx512(detail::next_x8_avx512(a0, a1, a2, a3));
-        const __m512d u2 =
-            detail::u64_to_pm1_avx512(detail::next_x8_avx512(a0, a1, a2, a3));
-        const __m512d s =
-            _mm512_add_pd(_mm512_mul_pd(u1, u1), _mm512_mul_pd(u2, u2));
-        const __mmask8 accept = _mm512_cmp_pd_mask(s, one, _CMP_LT_OQ) &
-                                _mm512_cmp_pd_mask(s, zero, _CMP_GT_OQ);
-        if (accept) {
-          const __m512d safe_s = _mm512_mask_blend_pd(accept, safe_val, s);
-          const __m512d factor = _mm512_sqrt_pd(
-              _mm512_div_pd(_mm512_mul_pd(neg2, _ZGVeN8v_log(safe_s)), safe_s));
-          const __m512d n1 = _mm512_add_pd(
-              vmean, _mm512_mul_pd(vstd, _mm512_mul_pd(u1, factor)));
-          const __m512d n2 = _mm512_add_pd(
-              vmean, _mm512_mul_pd(vstd, _mm512_mul_pd(u2, factor)));
-          alignas(64) double t1[8], t2[8];
-          const int n = __builtin_popcount(accept);
-          _mm512_mask_compressstoreu_pd(t1, accept, n1);
-          _mm512_mask_compressstoreu_pd(t2, accept, n2);
-          for (int k = 0; k < n && i < count; ++k) {
-            out[i++] = t1[k];
-            if (i < count)
-              out[i++] = t2[k];
-          }
-        }
-      }
-      if (i >= count)
-        break;
-      // Group b
-      {
-        const __m512d u1 =
-            detail::u64_to_pm1_avx512(detail::next_x8_avx512(b0, b1, b2, b3));
-        const __m512d u2 =
-            detail::u64_to_pm1_avx512(detail::next_x8_avx512(b0, b1, b2, b3));
-        const __m512d s =
-            _mm512_add_pd(_mm512_mul_pd(u1, u1), _mm512_mul_pd(u2, u2));
-        const __mmask8 accept = _mm512_cmp_pd_mask(s, one, _CMP_LT_OQ) &
-                                _mm512_cmp_pd_mask(s, zero, _CMP_GT_OQ);
-        if (accept) {
-          const __m512d safe_s = _mm512_mask_blend_pd(accept, safe_val, s);
-          const __m512d factor = _mm512_sqrt_pd(
-              _mm512_div_pd(_mm512_mul_pd(neg2, _ZGVeN8v_log(safe_s)), safe_s));
-          const __m512d n1 = _mm512_add_pd(
-              vmean, _mm512_mul_pd(vstd, _mm512_mul_pd(u1, factor)));
-          const __m512d n2 = _mm512_add_pd(
-              vmean, _mm512_mul_pd(vstd, _mm512_mul_pd(u2, factor)));
-          alignas(64) double t1[8], t2[8];
-          const int n = __builtin_popcount(accept);
-          _mm512_mask_compressstoreu_pd(t1, accept, n1);
-          _mm512_mask_compressstoreu_pd(t2, accept, n2);
-          for (int k = 0; k < n && i < count; ++k) {
-            out[i++] = t1[k];
-            if (i < count)
-              out[i++] = t2[k];
-          }
-        }
-      }
-    }
-    store_avx512(a0, a1, a2, a3, b0, b1, b2, b3);
-  }
-
-  void fill_exponential_avx512_veclog(double *__restrict__ out,
-                                      std::size_t count,
-                                      double inv_lambda) noexcept {
-    auto [a0, a1, a2, a3, b0, b1, b2, b3] = load_avx512();
-    const __m512d neg_inv = _mm512_set1_pd(-inv_lambda);
-    std::size_t i = 0;
-    while (i + 16 <= count) {
-      _mm512_storeu_pd(
-          out + i,
-          _mm512_mul_pd(neg_inv, _ZGVeN8v_log(detail::u64_to_uniform01_avx512(
-                                     detail::next_x8_avx512(a0, a1, a2, a3)))));
-      _mm512_storeu_pd(
-          out + i + 8,
-          _mm512_mul_pd(neg_inv, _ZGVeN8v_log(detail::u64_to_uniform01_avx512(
-                                     detail::next_x8_avx512(b0, b1, b2, b3)))));
-      i += 16;
-    }
-    if (i + 8 <= count) {
-      _mm512_storeu_pd(
-          out + i,
-          _mm512_mul_pd(neg_inv, _ZGVeN8v_log(detail::u64_to_uniform01_avx512(
-                                     detail::next_x8_avx512(a0, a1, a2, a3)))));
-      i += 8;
-    }
-    if (i < count) {
-      alignas(64) double tail[8];
-      _mm512_store_pd(
-          tail,
-          _mm512_mul_pd(neg_inv, _ZGVeN8v_log(detail::u64_to_uniform01_avx512(
-                                     detail::next_x8_avx512(a0, a1, a2, a3)))));
-      for (std::size_t lane = 0; i < count; ++lane, ++i)
-        out[i] = tail[lane];
-    }
-    store_avx512(a0, a1, a2, a3, b0, b1, b2, b3);
-  }
-#endif // ZORRO_USE_LIBMVEC
 #endif // __AVX512F__
 };
 

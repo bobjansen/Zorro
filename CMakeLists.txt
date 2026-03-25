@@ -237,31 +237,6 @@ if(RNG_BENCH_HAS_TESTU01)
     )
 endif()
 
-# libmvec provides vectorized math functions (_ZGVdN4v_log etc.)
-target_compile_definitions(
-    benchmark_distributions
-    PRIVATE
-        ZORRO_USE_LIBMVEC
-)
-
-target_compile_definitions(
-    normal_transform_comparison
-    PRIVATE
-        ZORRO_USE_LIBMVEC
-)
-
-target_compile_definitions(
-    normal_transform_tests
-    PRIVATE
-        ZORRO_USE_LIBMVEC
-)
-
-target_compile_definitions(
-    exponential_transform_tests
-    PRIVATE
-        ZORRO_USE_LIBMVEC
-)
-
 target_link_libraries(
     benchmark_distributions
     PRIVATE
@@ -280,28 +255,24 @@ target_link_libraries(
     high_dimensional_random_variables
     PRIVATE
         m
-        mvec
 )
 
 target_link_libraries(
     importance_sampling
     PRIVATE
         m
-        mvec
 )
 
 target_link_libraries(
     quality_tests
     PRIVATE
         m
-        mvec
 )
 
 target_link_libraries(
     dieharder_stream
     PRIVATE
         m
-        mvec
 )
 
 target_link_libraries(
@@ -323,7 +294,6 @@ if(RNG_BENCH_HAS_TESTU01)
         testu01_runner
         PRIVATE
             m
-            mvec
             ${RNG_BENCH_TESTU01_LIBRARY}
             ${RNG_BENCH_TESTU01_PROBDIST_LIBRARY}
             ${RNG_BENCH_TESTU01_MYLIB_LIBRARY}

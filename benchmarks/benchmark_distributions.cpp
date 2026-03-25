@@ -485,10 +485,20 @@ void print_header() {
     std::cout << "Seed:      0x" << std::hex << kSeed << std::dec << '\n';
     std::cout << "Warmups:   " << kWarmupIterations << '\n';
     std::cout << "Measures:  " << kMeasureIterations << '\n';
-#ifdef RNG_BENCH_ENABLE_STEPHANFR_AVX2
-    std::cout << "AVX2:      enabled\n\n";
+#ifdef __AVX2__
+    std::cout << "AVX2 kernels:    enabled\n";
 #else
-    std::cout << "AVX2:      disabled\n\n";
+    std::cout << "AVX2 kernels:    disabled\n";
+#endif
+#ifdef __AVX512F__
+    std::cout << "AVX-512 kernels: enabled\n";
+#else
+    std::cout << "AVX-512 kernels: disabled\n";
+#endif
+#ifdef RNG_BENCH_ENABLE_STEPHANFR_AVX2
+    std::cout << "Stephanfr AVX2:  enabled\n\n";
+#else
+    std::cout << "Stephanfr AVX2:  disabled\n\n";
 #endif
 }
 
