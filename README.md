@@ -280,11 +280,11 @@ The latest successful runs in `aws/results/` are:
 
 ### Uniform generation
 
-| Kernel | c8a.large (AMD) | c8i.large (Intel) |
-|---|---|---|
-| scalar | 1.024 / 1024 M/s | 1.152 / 910 M/s |
-| x8 AVX2 (2x4) | 0.258 / 4072 M/s | 0.320 / 3275 M/s |
-| x16 AVX-512 (2x8) | 0.130 / 8083 M/s | 0.284 / 3690 M/s |
+| Kernel | c8a.large ms | c8a.large M/s | c8i.large ms | c8i.large M/s |
+|---|---|---|---|---|
+| scalar | 1.024 | 1024 | 1.152 | 910 |
+| x8 AVX2 (2x4) | 0.258 | 4072 | 0.320 | 3275 |
+| x16 AVX-512 (2x8) | 0.130 | 8083 | 0.284 | 3690 |
 
 On the current AMD `c8a.large` host, uniform generation scales extremely well
 with AVX-512: `x16` is almost 2x the `x8` AVX2 path. On the Intel `c8i.large`
@@ -292,12 +292,12 @@ host, AVX-512 still wins, but the gain is more modest.
 
 ### Normal generation
 
-| Kernel | c8a.large (AMD) | c8i.large (Intel) |
-|---|---|---|
-| x8 AVX2 + box-muller fullapprox | 1.117 / 939 M/s | 1.287 / 815 M/s |
-| x16 AVX-512 + box-muller fullapprox | 1.123 / 934 M/s | 1.007 / 1041 M/s |
-| x8 AVX2 + vecpolar | 2.581 / 406 M/s | 2.757 / 380 M/s |
-| x16 AVX-512 + vecpolar | 2.673 / 392 M/s | 1.899 / 552 M/s |
+| Kernel | c8a.large ms | c8a.large M/s | c8i.large ms | c8i.large M/s |
+|---|---|---|---|---|
+| x8 AVX2 + box-muller fullapprox | 1.117 | 939 | 1.287 | 815 |
+| x16 AVX-512 + box-muller fullapprox | 1.123 | 934 | 1.007 | 1041 |
+| x8 AVX2 + vecpolar | 2.581 | 406 | 2.757 | 380 |
+| x16 AVX-512 + vecpolar | 2.673 | 392 | 1.899 | 552 |
 
 The new full-approximation Box-Muller path is now the best normal kernel in the
 tree. On Intel, widening it to `x16` AVX-512 gives another ~1.28x over the AVX2
@@ -311,13 +311,13 @@ than the AVX2 version in these runs.
 
 ### Exponential and Bernoulli
 
-| Kernel | c8a.large (AMD) | c8i.large (Intel) |
-|---|---|---|
-| Exp x8 AVX2 libmvec | 1.335 / 786 M/s | 1.624 / 646 M/s |
-| Exp x8 AVX2 fastlog | 1.194 / 878 M/s | 1.217 / 862 M/s |
-| Exp x16 AVX-512 libmvec | 0.850 / 1233 M/s | 1.180 / 889 M/s |
-| Bernoulli x8 AVX2 fast | 0.236 / 4435 M/s | 0.310 / 3383 M/s |
-| Bernoulli x16 AVX-512 ucmp | 0.122 / 8585 M/s | 0.281 / 3735 M/s |
+| Kernel | c8a.large ms | c8a.large M/s | c8i.large ms | c8i.large M/s |
+|---|---|---|---|---|
+| Exp x8 AVX2 libmvec | 1.335 | 786 | 1.624 | 646 |
+| Exp x8 AVX2 fastlog | 1.194 | 878 | 1.217 | 862 |
+| Exp x16 AVX-512 libmvec | 0.850 | 1233 | 1.180 | 889 |
+| Bernoulli x8 AVX2 fast | 0.236 | 4435 | 0.310 | 3383 |
+| Bernoulli x16 AVX-512 ucmp | 0.122 | 8585 | 0.281 | 3735 |
 
 For exponential, the validated AVX2 fastlog approximation still beats the
 exact AVX2 `libmvec` path on both current AWS machines. Intel still benefits
@@ -365,12 +365,12 @@ to the output buffer.
 
 **Gamma(2, 1) -- full/fused still win decisively**
 
-| Kernel | c8a.large (AMD) | c8i.large (Intel) |
+| Kernel | c8a.large M/s | c8i.large M/s |
 |---|---|---|
-| scalar fused | 61 M/s | 58 M/s |
-| x8 AVX2 fused | 148 M/s | 144 M/s |
-| x8+x4 AVX2 full (vectorized MT) | 160 M/s | 144 M/s |
-| x8 AVX2 decoupled | 90 M/s | 77 M/s |
+| scalar fused | 61 | 58 |
+| x8 AVX2 fused | 148 | 144 |
+| x8+x4 AVX2 full (vectorized MT) | 160 | 144 |
+| x8 AVX2 decoupled | 90 | 77 |
 
 Fused keeps the PRNG state registers hot and feeds the Marsaglia-Tsang
 acceptance loop directly from a 64-sample L1-resident buffer. Decoupled
@@ -379,12 +379,12 @@ bandwidth for no gain.
 
 **Student's t(5) -- decoupled wins**
 
-| Kernel | c8a.large (AMD) | c8i.large (Intel) |
+| Kernel | c8a.large M/s | c8i.large M/s |
 |---|---|---|
-| scalar fused | 34 M/s | 34 M/s |
-| x8 AVX2 fused | 48 M/s | 45 M/s |
-| x8 AVX2 decoupled | 77 M/s | 72 M/s |
-| x8+x4 AVX2 fast | 77 M/s | 73 M/s |
+| scalar fused | 34 | 34 |
+| x8 AVX2 fused | 48 | 45 |
+| x8 AVX2 decoupled | 77 | 72 |
+| x8+x4 AVX2 fast | 77 | 73 |
 
 For a compound distribution the fused variant forces a scalar Gamma loop into
 the hot path. Decoupled lets each sub-distribution run its own best kernel
