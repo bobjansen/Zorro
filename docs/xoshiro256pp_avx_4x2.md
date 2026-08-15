@@ -10,10 +10,9 @@ the compiler requires.
 
 ## 1. The Algorithm: xoshiro256++
 
-xoshiro256++ (pronounced "crosshatch-oh 256 plus-plus") is a pseudo-random
-number generator designed by David Blackman and Sebastiano Vigna. Its state is
-four 64-bit words `s[0..3]`, giving 256 bits total. Each call produces one
-64-bit output and updates the state.
+xoshiro256++ is a pseudo-random number generator designed by David Blackman and
+Sebastiano Vigna. Its state is four 64-bit words `s[0..3]`, giving 256 bits
+total. Each call produces one 64-bit output and updates the state.
 
 ### 1.1 The output function
 
